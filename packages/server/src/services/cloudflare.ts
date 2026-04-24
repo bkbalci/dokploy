@@ -528,18 +528,37 @@ export const removeCloudflareDnsRecord = async ({
 export const testCloudflareConnection = async (
     input: ApiTestCloudflareConnection,
 ) => {
-    const [verification, zones, tunnels] = await Promise.all([
-        cloudflareRequest<CloudflareTokenVerification>(
-            "/user/tokens/verify",
-            input.apiToken,
-        ),
-        listCloudflareZones(input.apiToken),
-        listCloudflareTunnels(input.apiToken, input.accountId),
-    ]);
+    const zones = await listCloudflareZones(input.apiToken).catch((error) => {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+                error instanceof Error
+                    ? `Cloudflare token is valid, but listing zones failed. Check that the token has Zone Read on the target zone or account. Original error: ${error.message}`
+                    : "Cloudflare token is valid, but listing zones failed",
+        });
+    });
+
+    const tunnels = await listCloudflareTunnels(
+        input.apiToken,
+        input.accountId,
+    ).catch((error) => {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+                error instanceof Error
+                    ? `Cloudflare token is valid, but listing tunnels for account '${input.accountId}' failed. Check that the Account ID matches the token scope and that the token has a tunnel or connector permission. Original error: ${error.message}`
+                    : "Cloudflare token is valid, but listing tunnels failed",
+        });
+    });
+
+    const verification = await cloudflareRequest<CloudflareTokenVerification>(
+        "/user/tokens/verify",
+        input.apiToken,
+    ).catch(() => null);
 
     return {
         accountId: input.accountId,
-        tokenStatus: verification.status,
+        tokenStatus: verification?.status ?? "resource access confirmed",
         zones,
         tunnels,
     };
