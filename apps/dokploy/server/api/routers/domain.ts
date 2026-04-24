@@ -1,6 +1,7 @@
 import {
 	createDomain,
 	findApplicationById,
+	findCloudflareIntegrationById,
 	findDomainById,
 	findDomainsByApplicationId,
 	findDomainsByComposeId,
@@ -8,9 +9,12 @@ import {
 	findServerById,
 	generateTraefikMeDomain,
 	getWebServerSettings,
+	listCloudflareIntegrationsByOrganizationId,
 	manageDomain,
+	removeCloudflareDomainSync,
 	removeDomain,
 	removeDomainById,
+	syncCloudflareDomain,
 	updateDomainById,
 	validateDomain,
 } from "@dokploy/server";
@@ -32,6 +36,42 @@ import {
 } from "@/server/db/schema";
 
 export const domainRouter = createTRPCRouter({
+	cloudflareOptions: protectedProcedure
+		.input(
+			z
+				.object({
+					applicationId: z.string().optional(),
+					composeId: z.string().optional(),
+				})
+				.refine((input) => !!input.applicationId || !!input.composeId, {
+					message: "Application or compose id is required",
+				}),
+		)
+		.query(async ({ input, ctx }) => {
+			if (input.applicationId) {
+				await checkServicePermissionAndAccess(ctx, input.applicationId, {
+					domain: ["read"],
+				});
+			}
+
+			if (input.composeId) {
+				await checkServicePermissionAndAccess(ctx, input.composeId, {
+					domain: ["read"],
+				});
+			}
+
+			const integrations = await listCloudflareIntegrationsByOrganizationId(
+				ctx.session.activeOrganizationId,
+			);
+
+			return integrations.map((integration) => ({
+				cloudflareIntegrationId: integration.cloudflareIntegrationId,
+				name: integration.name,
+				defaultZoneName: integration.defaultZoneName,
+				defaultTunnelId: integration.defaultTunnelId,
+				defaultTunnelName: integration.defaultTunnelName,
+			}));
+		}),
 	create: protectedProcedure
 		.input(apiCreateDomain)
 		.mutation(async ({ input, ctx }) => {
@@ -45,6 +85,20 @@ export const domainRouter = createTRPCRouter({
 						domain: ["create"],
 					});
 				}
+
+				if (input.publishToCloudflare && input.cloudflareIntegrationId) {
+					const integration = await findCloudflareIntegrationById(
+						input.cloudflareIntegrationId,
+					);
+					if (integration.organizationId !== ctx.session.activeOrganizationId) {
+						throw new TRPCError({
+							code: "UNAUTHORIZED",
+							message:
+								"You are not allowed to use this Cloudflare integration",
+						});
+					}
+				}
+
 				const domain = await createDomain(input);
 				await audit(ctx, {
 					action: "create",
@@ -118,7 +172,39 @@ export const domainRouter = createTRPCRouter({
 				});
 			}
 
-			const result = await updateDomainById(input.domainId, input);
+			const nextDomain = {
+				...currentDomain,
+				...input,
+				host: input.host?.trim() || currentDomain.host,
+			} as typeof currentDomain;
+
+			const nextCloudflareIntegrationId =
+				nextDomain.publishToCloudflare && nextDomain.cloudflareIntegrationId
+					? nextDomain.cloudflareIntegrationId
+					: null;
+
+			if (nextCloudflareIntegrationId) {
+				const integration = await findCloudflareIntegrationById(
+					nextCloudflareIntegrationId,
+				);
+				if (integration.organizationId !== ctx.session.activeOrganizationId) {
+					throw new TRPCError({
+						code: "UNAUTHORIZED",
+						message:
+							"You are not allowed to use this Cloudflare integration",
+					});
+				}
+			}
+
+			const cloudflareMetadata = await syncCloudflareDomain(
+				nextDomain,
+				currentDomain,
+			);
+
+			const result = await updateDomainById(input.domainId, {
+				...input,
+				...cloudflareMetadata,
+			});
 			const domain = await findDomainById(input.domainId);
 			await audit(ctx, {
 				action: "update",
@@ -175,6 +261,8 @@ export const domainRouter = createTRPCRouter({
 					domain: ["delete"],
 				});
 			}
+
+			await removeCloudflareDomainSync(domain);
 
 			const result = await removeDomainById(input.domainId);
 			await audit(ctx, {

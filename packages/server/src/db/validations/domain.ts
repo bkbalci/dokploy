@@ -20,6 +20,8 @@ export const domain = z
 		https: z.boolean().optional(),
 		certificateType: z.enum(["letsencrypt", "none", "custom"]).optional(),
 		customCertResolver: z.string(),
+		publishToCloudflare: z.boolean().optional(),
+		cloudflareIntegrationId: z.string().optional(),
 		middlewares: z.array(z.string()).optional(),
 	})
 	.superRefine((input, ctx) => {
@@ -36,6 +38,22 @@ export const domain = z
 				code: z.ZodIssueCode.custom,
 				path: ["customCertResolver"],
 				message: "Required when certificate type is custom",
+			});
+		}
+
+		if (input.publishToCloudflare && !input.cloudflareIntegrationId) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareIntegrationId"],
+				message: "Select a Cloudflare integration",
+			});
+		}
+
+		if (input.publishToCloudflare && input.host?.includes("traefik.me")) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["host"],
+				message: "traefik.me domains cannot be published through Cloudflare Tunnel",
 			});
 		}
 
@@ -84,6 +102,8 @@ export const domainCompose = z
 		certificateType: z.enum(["letsencrypt", "none", "custom"]).optional(),
 		customCertResolver: z.string(),
 		serviceName: z.string().min(1, { message: "Service name is required" }),
+		publishToCloudflare: z.boolean().optional(),
+		cloudflareIntegrationId: z.string().optional(),
 		middlewares: z.array(z.string()).optional(),
 	})
 	.superRefine((input, ctx) => {
@@ -100,6 +120,22 @@ export const domainCompose = z
 				code: z.ZodIssueCode.custom,
 				path: ["customCertResolver"],
 				message: "Required when certificate type is custom",
+			});
+		}
+
+		if (input.publishToCloudflare && !input.cloudflareIntegrationId) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareIntegrationId"],
+				message: "Select a Cloudflare integration",
+			});
+		}
+
+		if (input.publishToCloudflare && input.host?.includes("traefik.me")) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["host"],
+				message: "traefik.me domains cannot be published through Cloudflare Tunnel",
 			});
 		}
 

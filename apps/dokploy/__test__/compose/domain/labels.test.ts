@@ -22,6 +22,13 @@ describe("createDomainLabels", () => {
 		previewDeploymentId: "",
 		internalPath: "/",
 		stripPath: false,
+		publishToCloudflare: false,
+		cloudflareIntegrationId: null,
+		cloudflareZoneId: null,
+		cloudflareZoneName: null,
+		cloudflareTunnelId: null,
+		cloudflareTunnelName: null,
+		cloudflareDnsRecordId: null,
 		middlewares: null,
 	};
 

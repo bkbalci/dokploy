@@ -13,6 +13,7 @@ import { nanoid } from "nanoid";
 import { z } from "zod";
 import { domain } from "../validations/domain";
 import { applications } from "./application";
+import { cloudflareIntegration } from "./cloudflare";
 import { compose } from "./compose";
 import { previewDeployments } from "./preview-deployments";
 import { certificateType } from "./shared";
@@ -55,6 +56,18 @@ export const domains = pgTable("domain", {
 	internalPath: text("internalPath").default("/"),
 	stripPath: boolean("stripPath").notNull().default(false),
 	middlewares: text("middlewares").array().default(sql`ARRAY[]::text[]`),
+	publishToCloudflare: boolean("publishToCloudflare")
+		.notNull()
+		.default(false),
+	cloudflareIntegrationId: text("cloudflareIntegrationId").references(
+		() => cloudflareIntegration.cloudflareIntegrationId,
+		{ onDelete: "set null" },
+	),
+	cloudflareZoneId: text("cloudflareZoneId"),
+	cloudflareZoneName: text("cloudflareZoneName"),
+	cloudflareTunnelId: text("cloudflareTunnelId"),
+	cloudflareTunnelName: text("cloudflareTunnelName"),
+	cloudflareDnsRecordId: text("cloudflareDnsRecordId"),
 });
 
 export const domainsRelations = relations(domains, ({ one }) => ({
@@ -70,12 +83,23 @@ export const domainsRelations = relations(domains, ({ one }) => ({
 		fields: [domains.previewDeploymentId],
 		references: [previewDeployments.previewDeploymentId],
 	}),
+	cloudflareIntegration: one(cloudflareIntegration, {
+		fields: [domains.cloudflareIntegrationId],
+		references: [cloudflareIntegration.cloudflareIntegrationId],
+	}),
 }));
 
 const createSchema = createInsertSchema(domains, {
 	...domain.shape,
 	// Override pgEnum so Zod 4 infers only string literals, not numeric enum index
 	domainType: z.enum(["compose", "application", "preview"]).optional(),
+	publishToCloudflare: z.boolean().optional(),
+	cloudflareIntegrationId: z.string().optional().nullable(),
+	cloudflareZoneId: z.string().optional().nullable(),
+	cloudflareZoneName: z.string().optional().nullable(),
+	cloudflareTunnelId: z.string().optional().nullable(),
+	cloudflareTunnelName: z.string().optional().nullable(),
+	cloudflareDnsRecordId: z.string().optional().nullable(),
 });
 
 export const apiCreateDomain = createSchema.pick({
@@ -94,6 +118,8 @@ export const apiCreateDomain = createSchema.pick({
 	internalPath: true,
 	stripPath: true,
 	middlewares: true,
+	publishToCloudflare: true,
+	cloudflareIntegrationId: true,
 });
 
 export const apiFindDomain = z.object({
@@ -126,5 +152,12 @@ export const apiUpdateDomain = createSchema
 		internalPath: true,
 		stripPath: true,
 		middlewares: true,
+		publishToCloudflare: true,
+		cloudflareIntegrationId: true,
+		cloudflareZoneId: true,
+		cloudflareZoneName: true,
+		cloudflareTunnelId: true,
+		cloudflareTunnelName: true,
+		cloudflareDnsRecordId: true,
 	})
 	.merge(createSchema.pick({ domainId: true }).required());

@@ -33,6 +33,13 @@ describe("Host rule format regression tests", () => {
 		internalPath: "/",
 		stripPath: false,
 		customEntrypoint: null,
+		publishToCloudflare: false,
+		cloudflareIntegrationId: null,
+		cloudflareZoneId: null,
+		cloudflareZoneName: null,
+		cloudflareTunnelId: null,
+		cloudflareTunnelName: null,
+		cloudflareDnsRecordId: null,
 		middlewares: null,
 	};
 

@@ -2,6 +2,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import {
 	ArrowUpDown,
 	CheckCircle2,
+	Cloud,
 	ExternalLink,
 	Loader2,
 	PenBoxIcon,
@@ -21,9 +22,9 @@ import {
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { RouterOutputs } from "@/utils/api";
-import type { ValidationStates } from "./show-domains";
-import { AddDomain } from "./handle-domain";
 import { DnsHelperModal } from "./dns-helper-modal";
+import { AddDomain } from "./handle-domain";
+import type { ValidationStates } from "./show-domains";
 
 export type Domain =
 	| RouterOutputs["domain"]["byApplicationId"][0]
@@ -163,6 +164,12 @@ export const createColumns = ({
 
 			return (
 				<div className="flex items-center gap-2">
+					{domain.publishToCloudflare ? (
+						<Badge variant="outline" className="gap-1">
+							<Cloud className="size-3" />
+							{domain.cloudflareTunnelName || "Cloudflare Tunnel"}
+						</Badge>
+					) : null}
 					{domain.certificateType && (
 						<Badge variant="outline" className="capitalize">
 							{domain.certificateType}
@@ -264,6 +271,8 @@ export const createColumns = ({
 								path: domain.path || undefined,
 							}}
 							serverIp={serverIp}
+							publishToCloudflare={domain.publishToCloudflare}
+							cloudflareTunnelName={domain.cloudflareTunnelName}
 						/>
 					)}
 					{canCreateDomain && (

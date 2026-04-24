@@ -1,5 +1,5 @@
 import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
-import { DatabaseZap, Dices, RefreshCw, X } from "lucide-react";
+import { Cloud, DatabaseZap, Dices, Loader2, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
@@ -69,6 +69,8 @@ export const domain = z
 		customCertResolver: z.string().optional(),
 		serviceName: z.string().optional(),
 		domainType: z.enum(["application", "compose", "preview"]).optional(),
+		publishToCloudflare: z.boolean().optional(),
+		cloudflareIntegrationId: z.string().optional(),
 		middlewares: z.array(z.string()).optional(),
 	})
 	.superRefine((input, ctx) => {
@@ -126,6 +128,31 @@ export const domain = z
 				message: "Custom entry point must be specified",
 			});
 		}
+
+		if (input.publishToCloudflare && !input.cloudflareIntegrationId) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareIntegrationId"],
+				message: "Select a Cloudflare integration",
+			});
+		}
+
+		if (input.publishToCloudflare && input.host?.includes("traefik.me")) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["host"],
+				message: "traefik.me domains cannot be published through Cloudflare Tunnel",
+			});
+		}
+
+		if (input.publishToCloudflare && input.useCustomEntrypoint) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["publishToCloudflare"],
+				message:
+					"Cloudflare Tunnel publish does not support custom Traefik entrypoints yet",
+			});
+		}
 	});
 
 type Domain = z.infer<typeof domain>;
@@ -177,6 +204,16 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 
 	const { mutateAsync: generateDomain, isPending: isLoadingGenerate } =
 		api.domain.generateDomain.useMutation();
+	const {
+		data: cloudflareIntegrations,
+		isLoading: isLoadingCloudflareIntegrations,
+	} = api.domain.cloudflareOptions.useQuery(
+		type === "application" ? { applicationId: id } : { composeId: id },
+		{
+			enabled: isOpen && !!id,
+			refetchOnWindowFocus: false,
+		},
+	);
 
 	const { data: canGenerateTraefikMeDomains } =
 		api.domain.canGenerateTraefikMeDomains.useQuery({
@@ -215,6 +252,8 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 			customCertResolver: undefined,
 			serviceName: undefined,
 			domainType: type,
+			publishToCloudflare: false,
+			cloudflareIntegrationId: undefined,
 			middlewares: [],
 		},
 		mode: "onChange",
@@ -225,7 +264,13 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 	const https = form.watch("https");
 	const domainType = form.watch("domainType");
 	const host = form.watch("host");
+	const publishToCloudflare = form.watch("publishToCloudflare");
+	const selectedCloudflareIntegrationId = form.watch("cloudflareIntegrationId");
 	const isTraefikMeDomain = host?.includes("traefik.me") || false;
+	const selectedCloudflareIntegration = cloudflareIntegrations?.find(
+		(integration) =>
+			integration.cloudflareIntegrationId === selectedCloudflareIntegrationId,
+	);
 
 	useEffect(() => {
 		if (data) {
@@ -242,6 +287,9 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				customCertResolver: data?.customCertResolver || undefined,
 				serviceName: data?.serviceName || undefined,
 				domainType: data?.domainType || type,
+				publishToCloudflare: data?.publishToCloudflare || false,
+				cloudflareIntegrationId:
+					data?.cloudflareIntegrationId || undefined,
 				middlewares: data?.middlewares || [],
 			});
 		}
@@ -259,10 +307,27 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				certificateType: undefined,
 				customCertResolver: undefined,
 				domainType: type,
+				publishToCloudflare: false,
+				cloudflareIntegrationId: undefined,
 				middlewares: [],
 			});
 		}
 	}, [form, data, isPending, domainId]);
+
+	useEffect(() => {
+		if (
+			isOpen &&
+			!domainId &&
+			!form.getValues("cloudflareIntegrationId") &&
+			cloudflareIntegrations?.length === 1
+		) {
+			form.setValue(
+				"cloudflareIntegrationId",
+				cloudflareIntegrations[0]?.cloudflareIntegrationId,
+				{ shouldValidate: true },
+			);
+		}
+	}, [cloudflareIntegrations, domainId, form, isOpen]);
 
 	// Separate effect for handling custom cert resolver validation
 	useEffect(() => {
@@ -577,6 +642,99 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 										</FormItem>
 									)}
 								/>
+
+										<FormField
+											control={form.control}
+											name="publishToCloudflare"
+											render={({ field }) => (
+												<FormItem className="flex flex-row items-center justify-between p-3 border rounded-lg shadow-sm">
+													<div className="space-y-0.5">
+														<FormLabel className="flex items-center gap-2">
+															<Cloud className="size-4" />
+															Publish Through Cloudflare Tunnel
+														</FormLabel>
+														<FormDescription>
+															Dokploy will manage the tunnel ingress and proxied CNAME for
+															this domain using the selected Cloudflare integration.
+														</FormDescription>
+														<FormMessage />
+													</div>
+													<FormControl>
+														<Switch
+															checked={field.value}
+															onCheckedChange={field.onChange}
+														/>
+													</FormControl>
+												</FormItem>
+											)}
+										/>
+
+										{publishToCloudflare && (
+											<div className="flex flex-col gap-4 rounded-lg border p-4">
+												{cloudflareIntegrations?.length === 0 ? (
+													<AlertBlock type="warning">
+														No Cloudflare integrations are available for this organization.
+														Configure one under{" "}
+														<Link href="/dashboard/settings/cloudflare" className="text-primary">
+															Settings → Cloudflare
+														</Link>
+														first.
+													</AlertBlock>
+												) : null}
+
+												<FormField
+													control={form.control}
+													name="cloudflareIntegrationId"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel>Cloudflare Integration</FormLabel>
+															<Select
+																onValueChange={field.onChange}
+																value={field.value}
+																disabled={isLoadingCloudflareIntegrations}
+															>
+																<FormControl>
+																	<SelectTrigger>
+																		<SelectValue placeholder="Select a Cloudflare integration" />
+																	</SelectTrigger>
+																</FormControl>
+																<SelectContent>
+																	{cloudflareIntegrations?.map((integration) => (
+																		<SelectItem
+																			key={integration.cloudflareIntegrationId}
+																			value={integration.cloudflareIntegrationId}
+																		>
+																			{integration.name}
+																		</SelectItem>
+																	))}
+																</SelectContent>
+															</Select>
+															{isLoadingCloudflareIntegrations ? (
+																<div className="flex items-center gap-2 text-sm text-muted-foreground">
+																	<Loader2 className="size-4 animate-spin" />
+																	Loading Cloudflare integrations...
+																</div>
+															) : null}
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+
+												{selectedCloudflareIntegration ? (
+													<AlertBlock
+														type={
+															selectedCloudflareIntegration.defaultTunnelId
+																? "info"
+																: "warning"
+														}
+													>
+														{selectedCloudflareIntegration.defaultTunnelId
+															? `Dokploy will use tunnel '${selectedCloudflareIntegration.defaultTunnelName || "Unnamed tunnel"}'${selectedCloudflareIntegration.defaultZoneName ? ` in zone '${selectedCloudflareIntegration.defaultZoneName}'` : ""}.`
+															: "The selected Cloudflare integration does not have a default tunnel yet. Configure one in Settings → Cloudflare before saving this domain."}
+													</AlertBlock>
+												) : null}
+											</div>
+										)}
 
 								<FormField
 									control={form.control}

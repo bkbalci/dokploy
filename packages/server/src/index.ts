@@ -12,6 +12,7 @@ export * from "./services/application";
 export * from "./services/backup";
 export * from "./services/bitbucket";
 export * from "./services/certificate";
+export * from "./services/cloudflare";
 export * from "./services/cluster";
 export * from "./services/compose";
 export * from "./services/deployment";

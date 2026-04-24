@@ -12,6 +12,7 @@ import {
 import {
 	CheckCircle2,
 	ChevronDown,
+	Cloud,
 	ExternalLink,
 	GlobeIcon,
 	InfoIcon,
@@ -436,6 +437,8 @@ export const ShowDomains = ({ id, type }: Props) => {
 																	application?.server?.ipAddress?.toString() ||
 																	ip?.toString()
 																}
+																	publishToCloudflare={item.publishToCloudflare}
+																	cloudflareTunnelName={item.cloudflareTunnelName}
 															/>
 														)}
 														{canCreateDomain && (
@@ -632,6 +635,13 @@ export const ShowDomains = ({ id, type }: Props) => {
 															</TooltipContent>
 														</Tooltip>
 													</TooltipProvider>
+
+													{item.publishToCloudflare ? (
+														<Badge variant="outline">
+															<Cloud className="size-3 mr-1" />
+															{item.cloudflareTunnelName || "Cloudflare Tunnel"}
+														</Badge>
+													) : null}
 												</div>
 											</div>
 										</CardContent>
