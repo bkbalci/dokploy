@@ -109,6 +109,200 @@ const getCloudflareErrorMessage = (data: {
     );
 };
 
+type CloudflareUserFacingErrorContext = {
+    action?: "create-tunnel" | "publish-domain" | "repair-domain";
+    step?:
+    | "select-tunnel"
+    | "shared-runtime"
+    | "resolve-zone"
+    | "resolve-origin"
+    | "update-ingress"
+    | "update-dns"
+    | "delete-ingress"
+    | "delete-dns";
+    hostname?: string | null;
+    cloudflareTunnelMode?:
+    | "existing-instance"
+    | "sidecar"
+    | "shared-managed"
+    | null;
+    tunnelName?: string | null;
+    serviceName?: string | null;
+    port?: number | null;
+};
+
+const getCloudflareUnknownErrorMessage = (error: unknown) => {
+    if (error instanceof TRPCError) {
+        return error.message;
+    }
+
+    if (error instanceof Error) {
+        return error.message;
+    }
+
+    return String(error);
+};
+
+const getCloudflareFallbackMessage = (
+    context: CloudflareUserFacingErrorContext,
+) => {
+    const hostname = context.hostname ? `'${context.hostname}'` : "this hostname";
+
+    switch (context.step) {
+        case "select-tunnel":
+            return "Dokploy could not load the selected Cloudflare tunnel. Re-select the tunnel or verify the integration account access.";
+        case "shared-runtime":
+        case "resolve-origin":
+            if (context.cloudflareTunnelMode === "sidecar") {
+                return "Dokploy could not prepare the sidecar origin for this domain. Check the compose service and container port settings.";
+            }
+
+            if (context.cloudflareTunnelMode === "shared-managed") {
+                return "Dokploy could not prepare the shared-managed origin. Ensure Dokploy Traefik is running on the target server first.";
+            }
+
+            return "Dokploy could not determine the origin server for this domain. Check the service server assignment or the global Web Server IP.";
+        case "resolve-zone":
+            return `Dokploy could not find a matching Cloudflare zone for ${hostname}.`;
+        case "update-ingress":
+            return "Cloudflare could not update the tunnel ingress for this domain.";
+        case "update-dns":
+            return "Cloudflare could not update the DNS record for this domain.";
+        case "delete-ingress":
+            return "Cloudflare could not remove the tunnel ingress for this domain.";
+        case "delete-dns":
+            return "Cloudflare could not remove the DNS record for this domain.";
+        default:
+            if (context.action === "create-tunnel") {
+                return "Cloudflare could not create the dedicated tunnel.";
+            }
+
+            if (context.action === "repair-domain") {
+                return "Dokploy could not repair the Cloudflare configuration for this domain.";
+            }
+
+            return "Dokploy could not publish this domain through Cloudflare Tunnel.";
+    }
+};
+
+export const toUserFacingCloudflareError = (
+    error: unknown,
+    context: CloudflareUserFacingErrorContext = {},
+) => {
+    if (
+        error instanceof TRPCError &&
+        error.code === "UNAUTHORIZED" &&
+        error.message === "You are not allowed to use this Cloudflare integration"
+    ) {
+        return error;
+    }
+
+    const originalMessage = getCloudflareUnknownErrorMessage(error).trim();
+    const lowerMessage = originalMessage.toLowerCase();
+
+    let message = originalMessage;
+
+    if (originalMessage.includes("Select a Cloudflare tunnel for this domain")) {
+        message =
+            "No Cloudflare tunnel is selected for this domain. Choose a tunnel here or set a default tunnel on the selected integration.";
+    } else if (
+        originalMessage.includes(
+            "Cloudflare sidecar mode is currently supported for compose services only",
+        )
+    ) {
+        message =
+            "Cloudflare sidecar mode currently works only for compose services. Use an existing or shared-managed tunnel for app domains, or move this domain to a compose service.";
+    } else if (
+        originalMessage.includes(
+            "A compose service name is required before Dokploy can create a Cloudflare sidecar",
+        )
+    ) {
+        message =
+            "Sidecar origin is incomplete. Select the compose service that should receive this traffic before saving.";
+    } else if (
+        originalMessage.includes(
+            "A container port is required before Dokploy can create a Cloudflare sidecar",
+        )
+    ) {
+        message =
+            "Sidecar origin is incomplete. Select the container port that should receive this traffic before saving.";
+    } else if (
+        originalMessage.includes(
+            "Cloudflare Tunnel publish does not support custom Traefik entrypoints yet",
+        )
+    ) {
+        message =
+            "Cloudflare publish cannot use a custom Traefik entrypoint yet. Switch back to Dokploy's default HTTP/HTTPS entrypoints or disable Cloudflare publish for this domain.";
+    } else if (
+        originalMessage.includes(
+            "A server IP is required before Dokploy can publish this domain through Cloudflare Tunnel",
+        )
+    ) {
+        message =
+            "Dokploy cannot determine which server should receive this tunnel traffic. Attach the service to a server or configure the global Web Server IP before publishing through Cloudflare.";
+    } else if (
+        originalMessage.includes(
+            "Dokploy Traefik runtime was not found on the selected server",
+        )
+    ) {
+        message =
+            "Shared-managed tunnel setup cannot continue because Dokploy Traefik is not running on the target server. Start or repair Traefik on that server first.";
+    } else if (originalMessage.includes("No Cloudflare zone matches")) {
+        const hostname = context.hostname || "this hostname";
+        message = `Cloudflare could not find a zone for '${hostname}'. Use a hostname that belongs to a zone in the selected account, or switch to another Cloudflare integration.`;
+    } else if (
+        originalMessage.includes("already exists and is not managed by Dokploy")
+    ) {
+        message =
+            "Cloudflare already has a DNS record for this hostname that Dokploy does not manage. Remove or update that record manually, or choose a different hostname.";
+    } else if (
+        originalMessage.includes("is not managed by Dokploy") &&
+        originalMessage.includes("Cloudflare DNS record")
+    ) {
+        message =
+            "Dokploy will not modify this Cloudflare DNS record because it is not marked as Dokploy-managed.";
+    } else if (
+        originalMessage.includes("was not found in the selected account") &&
+        originalMessage.includes("Cloudflare tunnel")
+    ) {
+        message =
+            "The selected Cloudflare tunnel is no longer available in this account. Re-select a tunnel or verify that the integration Account ID and token point to the same Cloudflare account.";
+    } else if (
+        context.action === "create-tunnel" &&
+        lowerMessage.includes("already exists")
+    ) {
+        message =
+            "A Cloudflare tunnel with this name already exists. Use a different name or reuse the existing tunnel instead of creating a new one.";
+    } else if (
+        lowerMessage.includes("authentication") ||
+        lowerMessage.includes("unauthorized") ||
+        lowerMessage.includes("forbidden") ||
+        lowerMessage.includes("permission denied") ||
+        lowerMessage.includes("invalid request headers")
+    ) {
+        message =
+            context.action === "create-tunnel"
+                ? "Cloudflare rejected the tunnel request. Verify that the API token has tunnel permissions and that the Account ID belongs to the same Cloudflare account as the token."
+                : "Cloudflare rejected this request. Verify the API token scopes, the Account ID, and that the selected zone and tunnel belong to the same Cloudflare account.";
+    } else if (
+        lowerMessage.includes("fetch failed") ||
+        lowerMessage.includes("econnreset") ||
+        lowerMessage.includes("enotfound") ||
+        lowerMessage.includes("network")
+    ) {
+        message =
+            "Dokploy could not reach the Cloudflare API. Check outbound network connectivity from the server and try again.";
+    } else if (!originalMessage || originalMessage === "Cloudflare request failed") {
+        message = getCloudflareFallbackMessage(context);
+    }
+
+    return new TRPCError({
+        code: error instanceof TRPCError ? error.code : "BAD_REQUEST",
+        message: message || getCloudflareFallbackMessage(context),
+        cause: error instanceof Error ? error : undefined,
+    });
+};
+
 const normalizeCloudflarePath = (path?: string | null) => {
     if (!path || path === "/") {
         return null;

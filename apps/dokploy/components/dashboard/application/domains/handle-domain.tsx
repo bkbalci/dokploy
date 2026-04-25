@@ -47,6 +47,14 @@ import { api } from "@/utils/api";
 export type CacheType = "fetch" | "cache";
 type SidecarTunnelSource = "existing" | "dedicated";
 
+const getMutationErrorMessage = (error: unknown, fallback: string) => {
+	if (error instanceof Error) {
+		return error.message;
+	}
+
+	return fallback;
+};
+
 export const domain = z
 	.object({
 		host: z
@@ -631,9 +639,15 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				}
 				setIsOpen(false);
 			})
-			.catch((e) => {
-				console.log(e);
-				toast.error(dictionary.error);
+			.catch((error) => {
+				toast.error(dictionary.error, {
+					description: getMutationErrorMessage(
+						error,
+						domainId
+							? "The domain update request failed."
+							: "The domain create request failed.",
+					),
+				});
 			});
 	};
 
@@ -690,11 +704,12 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 			);
 			toast.success(`Created Cloudflare tunnel '${createdTunnel.name}'`);
 		} catch (error) {
-			toast.error(
-				error instanceof Error
-					? error.message
-					: "Failed to create Cloudflare tunnel",
-			);
+			toast.error("Failed to create Cloudflare tunnel", {
+				description: getMutationErrorMessage(
+					error,
+					"The tunnel create request failed.",
+				),
+			});
 		}
 	};
 

@@ -21,6 +21,7 @@ import {
 	removeDomainById,
 	repairCloudflareDomainDrift,
 	syncCloudflareDomain,
+	toUserFacingCloudflareError,
 	updateDomainById,
 	validateDomain,
 } from "@dokploy/server";
@@ -276,6 +277,10 @@ export const domainRouter = createTRPCRouter({
 				apiToken: integration.apiToken,
 				accountId: integration.accountId,
 				name: input.name,
+			}).catch((error) => {
+				throw toUserFacingCloudflareError(error, {
+					action: "create-tunnel",
+				});
 			});
 
 			await audit(ctx, {

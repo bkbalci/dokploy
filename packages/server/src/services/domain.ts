@@ -22,6 +22,7 @@ import {
 	getCloudflareTunnelConfiguration,
 	removeCloudflareDnsRecord,
 	removeCloudflareTunnelIngress,
+	toUserFacingCloudflareError,
 	upsertCloudflareDnsRecord,
 	upsertCloudflareTunnelIngress,
 } from "./cloudflare";
@@ -275,6 +276,16 @@ export const syncCloudflareDomain = async (
 		nextDomain.cloudflareIntegrationId,
 	);
 	const tunnelId = nextDomain.cloudflareTunnelId || integration.defaultTunnelId;
+	let syncStep:
+		| "select-tunnel"
+		| "shared-runtime"
+		| "resolve-zone"
+		| "resolve-origin"
+		| "update-ingress"
+		| "update-dns" = "select-tunnel";
+	let tunnel: { id: string; name: string } | null = null;
+	let ensuredSharedRuntime = false;
+
 	if (!tunnelId) {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
@@ -283,46 +294,49 @@ export const syncCloudflareDomain = async (
 		});
 	}
 
-	const tunnel =
-		integration.defaultTunnelId === tunnelId && integration.defaultTunnelName
-			? {
-				id: integration.defaultTunnelId,
-				name: integration.defaultTunnelName,
-			}
-			: await findCloudflareTunnelById({
-				apiToken: integration.apiToken,
-				accountId: integration.accountId,
-				tunnelId,
-			});
-
-	if (
-		currentDomain?.publishToCloudflare &&
-		hasCloudflareBindingChanged(currentDomain, nextDomain, tunnel.id)
-	) {
-		await removeCloudflareDomainSync(currentDomain);
-	}
-
-	let ensuredSharedRuntime = false;
-	if (nextDomain.cloudflareTunnelMode === "shared-managed") {
-		await ensureSharedManagedCloudflareTunnelRuntime({
-			organizationId: integration.organizationId,
-			cloudflareIntegrationId: integration.cloudflareIntegrationId,
-			cloudflareTunnelId: tunnel.id,
-			cloudflareTunnelName: tunnel.name,
-			domain: nextDomain,
-		});
-		ensuredSharedRuntime = true;
-	}
-
 	try {
+		tunnel =
+			integration.defaultTunnelId === tunnelId && integration.defaultTunnelName
+				? {
+					id: integration.defaultTunnelId,
+					name: integration.defaultTunnelName,
+				}
+				: await findCloudflareTunnelById({
+					apiToken: integration.apiToken,
+					accountId: integration.accountId,
+					tunnelId,
+				});
+
+		if (
+			currentDomain?.publishToCloudflare &&
+			hasCloudflareBindingChanged(currentDomain, nextDomain, tunnel.id)
+		) {
+			await removeCloudflareDomainSync(currentDomain);
+		}
+
+		syncStep = "shared-runtime";
+		if (nextDomain.cloudflareTunnelMode === "shared-managed") {
+			await ensureSharedManagedCloudflareTunnelRuntime({
+				organizationId: integration.organizationId,
+				cloudflareIntegrationId: integration.cloudflareIntegrationId,
+				cloudflareTunnelId: tunnel.id,
+				cloudflareTunnelName: tunnel.name,
+				domain: nextDomain,
+			});
+			ensuredSharedRuntime = true;
+		}
+
+		syncStep = "resolve-zone";
 		const zone = await findCloudflareZoneForHostname({
 			apiToken: integration.apiToken,
 			hostname: nextDomain.host,
 			preferredZoneId: integration.defaultZoneId,
 			preferredZoneName: integration.defaultZoneName,
 		});
+		syncStep = "resolve-origin";
 		const origin = await getCloudflareOriginService(nextDomain);
 
+		syncStep = "update-ingress";
 		await upsertCloudflareTunnelIngress({
 			apiToken: integration.apiToken,
 			accountId: integration.accountId,
@@ -333,6 +347,7 @@ export const syncCloudflareDomain = async (
 			originRequest: origin.originRequest,
 		});
 
+		syncStep = "update-dns";
 		const dnsRecord = await upsertCloudflareDnsRecord({
 			apiToken: integration.apiToken,
 			zoneId: zone.id,
@@ -363,7 +378,7 @@ export const syncCloudflareDomain = async (
 		const alreadyUsingSharedRuntime =
 			currentDomain?.cloudflareTunnelMode === "shared-managed" &&
 			currentDomain.cloudflareIntegrationId === integration.cloudflareIntegrationId &&
-			currentTunnelId === tunnel.id;
+			currentTunnelId === tunnel?.id;
 
 		if (ensuredSharedRuntime && !alreadyUsingSharedRuntime) {
 			await releaseSharedManagedCloudflareTunnelRuntime(nextDomain).catch(
@@ -371,7 +386,15 @@ export const syncCloudflareDomain = async (
 			);
 		}
 
-		throw error;
+		throw toUserFacingCloudflareError(error, {
+			action: currentDomain ? "repair-domain" : "publish-domain",
+			step: syncStep,
+			hostname: nextDomain.host,
+			cloudflareTunnelMode: nextDomain.cloudflareTunnelMode,
+			tunnelName: tunnel?.name || nextDomain.cloudflareTunnelName,
+			serviceName: nextDomain.serviceName,
+			port: nextDomain.port,
+		});
 	}
 };
 
