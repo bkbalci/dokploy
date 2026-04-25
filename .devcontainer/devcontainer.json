@@ -54,5 +54,10 @@
 	},
 	"remoteUser": "node",
 	"workspaceFolder": "/workspaces/dokploy",
+	"mounts": [
+	"source=dokploy-node-modules,target=/workspaces/dokploy/node_modules,type=volume",
+	"source=dokploy-pnpm-store,target=/home/node/.pnpm-store,type=volume"
+	],
+	"postCreateCommand": "sudo chown -R node:node /workspaces/dokploy/node_modules",
 	"runArgs": ["--name", "dokploy-devcontainer"]
 }
