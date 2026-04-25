@@ -148,6 +148,7 @@ const baseDomain: Domain = {
 	internalPath: "/",
 	stripPath: false,
 	publishToCloudflare: false,
+	cloudflareTunnelMode: "existing-instance",
 	cloudflareIntegrationId: null,
 	cloudflareZoneId: null,
 	cloudflareZoneName: null,

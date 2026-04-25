@@ -1,0 +1,2 @@
+CREATE TYPE "public"."cloudflareTunnelMode" AS ENUM('existing-instance', 'sidecar');--> statement-breakpoint
+ALTER TABLE "domain" ADD COLUMN "cloudflareTunnelMode" "cloudflareTunnelMode" DEFAULT 'existing-instance' NOT NULL;

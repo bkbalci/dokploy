@@ -25,6 +25,11 @@ enum certificateType {
   custom
 }
 
+enum cloudflareTunnelMode {
+  "existing-instance"
+  sidecar
+}
+
 enum composeType {
   "docker-compose"
   stack
@@ -517,6 +522,7 @@ table domain {
   stripPath boolean [not null, default: false]
   middlewares text[] [default: `ARRAY[]::text[]`]
   publishToCloudflare boolean [not null, default: false]
+  cloudflareTunnelMode cloudflareTunnelMode [not null, default: 'existing-instance']
   cloudflareIntegrationId text
   cloudflareZoneId text
   cloudflareZoneName text

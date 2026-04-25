@@ -10,6 +10,7 @@ import {
 	generateTraefikMeDomain,
 	getWebServerSettings,
 	listCloudflareIntegrationsByOrganizationId,
+	listCloudflareTunnels,
 	manageDomain,
 	removeCloudflareDomainSync,
 	removeDomain,
@@ -72,6 +73,53 @@ export const domainRouter = createTRPCRouter({
 				defaultTunnelName: integration.defaultTunnelName,
 			}));
 		}),
+	cloudflareTunnelOptions: protectedProcedure
+		.input(
+			z
+				.object({
+					applicationId: z.string().optional(),
+					composeId: z.string().optional(),
+					cloudflareIntegrationId: z.string().min(1),
+				})
+				.refine((input) => !!input.applicationId || !!input.composeId, {
+					message: "Application or compose id is required",
+				}),
+		)
+		.query(async ({ input, ctx }) => {
+			if (input.applicationId) {
+				await checkServicePermissionAndAccess(ctx, input.applicationId, {
+					domain: ["read"],
+				});
+			}
+
+			if (input.composeId) {
+				await checkServicePermissionAndAccess(ctx, input.composeId, {
+					domain: ["read"],
+				});
+			}
+
+			const integration = await findCloudflareIntegrationById(
+				input.cloudflareIntegrationId,
+			);
+
+			if (integration.organizationId !== ctx.session.activeOrganizationId) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You are not allowed to use this Cloudflare integration",
+				});
+			}
+
+			const tunnels = await listCloudflareTunnels(
+				integration.apiToken,
+				integration.accountId,
+			);
+
+			return {
+				defaultTunnelId: integration.defaultTunnelId,
+				defaultTunnelName: integration.defaultTunnelName,
+				tunnels,
+			};
+		}),
 	create: protectedProcedure
 		.input(apiCreateDomain)
 		.mutation(async ({ input, ctx }) => {
@@ -93,8 +141,7 @@ export const domainRouter = createTRPCRouter({
 					if (integration.organizationId !== ctx.session.activeOrganizationId) {
 						throw new TRPCError({
 							code: "UNAUTHORIZED",
-							message:
-								"You are not allowed to use this Cloudflare integration",
+							message: "You are not allowed to use this Cloudflare integration",
 						});
 					}
 				}
@@ -190,8 +237,7 @@ export const domainRouter = createTRPCRouter({
 				if (integration.organizationId !== ctx.session.activeOrganizationId) {
 					throw new TRPCError({
 						code: "UNAUTHORIZED",
-						message:
-							"You are not allowed to use this Cloudflare integration",
+						message: "You are not allowed to use this Cloudflare integration",
 					});
 				}
 			}
@@ -203,6 +249,7 @@ export const domainRouter = createTRPCRouter({
 
 			const result = await updateDomainById(input.domainId, {
 				...input,
+				cloudflareTunnelMode: input.cloudflareTunnelMode || undefined,
 				...cloudflareMetadata,
 			});
 			const domain = await findDomainById(input.domainId);

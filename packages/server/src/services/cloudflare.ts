@@ -162,7 +162,7 @@ const cloudflareRequest = async <T>(
     return data.result;
 };
 
-const listCloudflareZones = async (apiToken: string) => {
+export const listCloudflareZones = async (apiToken: string) => {
     const zones = await cloudflareRequest<CloudflareZone[]>(
         "/zones?per_page=100",
         apiToken,
@@ -179,7 +179,10 @@ const listCloudflareZones = async (apiToken: string) => {
         .sort((left, right) => left.name.localeCompare(right.name));
 };
 
-const listCloudflareTunnels = async (apiToken: string, accountId: string) => {
+export const listCloudflareTunnels = async (
+    apiToken: string,
+    accountId: string,
+) => {
     const tunnels = await cloudflareRequest<CloudflareTunnel[]>(
         `/accounts/${accountId}/cfd_tunnel?is_deleted=false&per_page=100`,
         apiToken,
@@ -195,6 +198,28 @@ const listCloudflareTunnels = async (apiToken: string, accountId: string) => {
             lastInactiveAt: tunnel.conns_inactive_at ?? null,
         }))
         .sort((left, right) => left.name.localeCompare(right.name));
+};
+
+export const findCloudflareTunnelById = async ({
+    apiToken,
+    accountId,
+    tunnelId,
+}: {
+    apiToken: string;
+    accountId: string;
+    tunnelId: string;
+}) => {
+    const tunnels = await listCloudflareTunnels(apiToken, accountId);
+    const tunnel = tunnels.find((item) => item.id === tunnelId);
+
+    if (!tunnel) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `Cloudflare tunnel '${tunnelId}' was not found in the selected account`,
+        });
+    }
+
+    return tunnel;
 };
 
 const findCloudflareDnsRecord = async (
@@ -303,6 +328,21 @@ export const getCloudflareTunnelConfiguration = async ({
 }) => {
     return cloudflareRequest<CloudflareTunnelConfigurationResult>(
         `/accounts/${accountId}/cfd_tunnel/${tunnelId}/configurations`,
+        apiToken,
+    );
+};
+
+export const getCloudflareTunnelToken = async ({
+    apiToken,
+    accountId,
+    tunnelId,
+}: {
+    apiToken: string;
+    accountId: string;
+    tunnelId: string;
+}) => {
+    return cloudflareRequest<string>(
+        `/accounts/${accountId}/cfd_tunnel/${tunnelId}/token`,
         apiToken,
     );
 };

@@ -3,7 +3,10 @@ import { paths } from "@dokploy/server/constants";
 import type { InferResultType } from "@dokploy/server/types/with";
 import boxen from "boxen";
 import { quote } from "shell-quote";
-import { writeDomainsToCompose } from "../docker/domain";
+import {
+	getCloudflareSidecarEnvVariables,
+	writeDomainsToCompose,
+} from "../docker/domain";
 import {
 	encodeBase64,
 	getEnvironmentVariablesObject,
@@ -19,7 +22,7 @@ export const getBuildComposeCommand = async (compose: ComposeNested) => {
 	const { COMPOSE_PATH } = paths(!!compose.serverId);
 	const { sourceType, appName, mounts, composeType, domains } = compose;
 	const command = createCommand(compose);
-	const envCommand = getCreateEnvFileCommand(compose);
+	const envCommand = await getCreateEnvFileCommand(compose);
 	const projectPath = join(COMPOSE_PATH, compose.appName, "code");
 	const exportEnvCommand = getExportEnvCommand(compose);
 
@@ -96,9 +99,9 @@ export const createCommand = (compose: ComposeNested) => {
 	return command;
 };
 
-export const getCreateEnvFileCommand = (compose: ComposeNested) => {
+export const getCreateEnvFileCommand = async (compose: ComposeNested) => {
 	const { COMPOSE_PATH } = paths(!!compose.serverId);
-	const { env, composePath, appName } = compose;
+	const { env, composePath, appName, domains } = compose;
 	const composeFilePath =
 		join(COMPOSE_PATH, appName, "code", composePath) ||
 		join(COMPOSE_PATH, appName, "code", "docker-compose.yml");
@@ -114,6 +117,11 @@ export const getCreateEnvFileCommand = (compose: ComposeNested) => {
 
 	if (compose.randomize) {
 		envContent += `\nCOMPOSE_PREFIX=${compose.suffix}`;
+	}
+
+	const cloudflareSidecarEnv = await getCloudflareSidecarEnvVariables(domains);
+	for (const [key, value] of Object.entries(cloudflareSidecarEnv)) {
+		envContent += `\n${key}=${value}`;
 	}
 
 	const envFileContent = prepareEnvironmentVariables(

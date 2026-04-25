@@ -1,6 +1,10 @@
 import fs, { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { paths } from "@dokploy/server/constants";
+import {
+	findCloudflareIntegrationById,
+	getCloudflareTunnelToken,
+} from "@dokploy/server/services/cloudflare";
 import type { Compose } from "@dokploy/server/services/compose";
 import type { Domain } from "@dokploy/server/services/domain";
 import { parse, stringify } from "yaml";
@@ -19,6 +23,169 @@ import type {
 	PropertiesNetworks,
 } from "./types";
 import { encodeBase64 } from "./utils";
+
+const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:latest";
+
+type CloudflareSidecarTunnelConfig = {
+	serviceName: string;
+	envVarName: string;
+	token: string;
+};
+
+const getCloudflareSidecarServiceName = (tunnelId: string) => {
+	return `dokploy-cloudflared-${tunnelId.replace(/-/g, "")}`;
+};
+
+export const getCloudflareSidecarTokenEnvName = (tunnelId: string) => {
+	return `DOKPLOY_CLOUDFLARE_TUNNEL_TOKEN_${tunnelId
+		.replace(/-/g, "_")
+		.toUpperCase()}`;
+};
+
+const getCloudflareSidecarDomains = (domains: Domain[]) => {
+	return domains.filter(
+		(domain) =>
+			domain.publishToCloudflare && domain.cloudflareTunnelMode === "sidecar",
+	);
+};
+
+const buildSidecarTunnelKey = (
+	cloudflareIntegrationId: string,
+	tunnelId: string,
+) => `${cloudflareIntegrationId}:${tunnelId}`;
+
+const resolveCloudflareSidecarTunnels = async (domains: Domain[]) => {
+	const sidecarDomains = getCloudflareSidecarDomains(domains);
+	const sidecarTunnels = new Map<string, CloudflareSidecarTunnelConfig>();
+	const integrationCache = new Map<
+		string,
+		Awaited<ReturnType<typeof findCloudflareIntegrationById>>
+	>();
+
+	for (const domain of sidecarDomains) {
+		if (!domain.cloudflareIntegrationId || !domain.cloudflareTunnelId) {
+			throw new Error(
+				`Domain "${domain.host}" is missing Cloudflare integration or tunnel details for sidecar mode`,
+			);
+		}
+
+		const sidecarKey = buildSidecarTunnelKey(
+			domain.cloudflareIntegrationId,
+			domain.cloudflareTunnelId,
+		);
+		if (sidecarTunnels.has(sidecarKey)) {
+			continue;
+		}
+
+		let integration = integrationCache.get(domain.cloudflareIntegrationId);
+		if (!integration) {
+			integration = await findCloudflareIntegrationById(
+				domain.cloudflareIntegrationId,
+			);
+			integrationCache.set(domain.cloudflareIntegrationId, integration);
+		}
+
+		const token = await getCloudflareTunnelToken({
+			apiToken: integration.apiToken,
+			accountId: integration.accountId,
+			tunnelId: domain.cloudflareTunnelId,
+		});
+
+		sidecarTunnels.set(sidecarKey, {
+			serviceName: getCloudflareSidecarServiceName(domain.cloudflareTunnelId),
+			envVarName: getCloudflareSidecarTokenEnvName(domain.cloudflareTunnelId),
+			token,
+		});
+	}
+
+	return sidecarTunnels;
+};
+
+export const getCloudflareSidecarEnvVariables = async (domains: Domain[]) => {
+	const sidecarTunnels = await resolveCloudflareSidecarTunnels(domains);
+	return Object.fromEntries(
+		Array.from(sidecarTunnels.values()).map((sidecar) => [
+			sidecar.envVarName,
+			sidecar.token,
+		]),
+	);
+};
+
+const mergeServiceNetworks = (
+	currentNetworks: DefinitionsService["networks"],
+	incomingNetworks: DefinitionsService["networks"],
+): DefinitionsService["networks"] => {
+	if (!incomingNetworks) {
+		return currentNetworks;
+	}
+
+	if (!currentNetworks) {
+		return Array.isArray(incomingNetworks)
+			? [...incomingNetworks]
+			: { ...incomingNetworks };
+	}
+
+	if (Array.isArray(currentNetworks) && Array.isArray(incomingNetworks)) {
+		return [...new Set([...currentNetworks, ...incomingNetworks])];
+	}
+
+	if (Array.isArray(currentNetworks) && !Array.isArray(incomingNetworks)) {
+		const merged = Object.fromEntries(currentNetworks.map((name) => [name, {}]));
+		return {
+			...merged,
+			...incomingNetworks,
+		};
+	}
+
+	if (!Array.isArray(currentNetworks) && Array.isArray(incomingNetworks)) {
+		const merged = { ...currentNetworks };
+		for (const network of incomingNetworks) {
+			if (!(network in merged)) {
+				merged[network] = {};
+			}
+		}
+		return merged;
+	}
+
+	return {
+		...currentNetworks,
+		...incomingNetworks,
+	};
+};
+
+const createCloudflareSidecarService = ({
+	composeType,
+	envVarName,
+	networks,
+	dependsOn,
+}: {
+	composeType: Compose["composeType"];
+	envVarName: string;
+	networks: DefinitionsService["networks"];
+	dependsOn: string[];
+}): DefinitionsService => {
+	return {
+		image: CLOUDFLARED_IMAGE,
+		command: [
+			"tunnel",
+			"--no-autoupdate",
+			"run",
+			"--token",
+			`\${${envVarName}}`,
+		],
+		depends_on: dependsOn.length > 0 ? dependsOn : undefined,
+		networks,
+		...(composeType === "docker-compose"
+			? { restart: "unless-stopped" }
+			: {
+				deploy: {
+					restart_policy: {
+						condition: "any",
+					},
+				},
+			}),
+	};
+};
 
 export const cloneCompose = async (compose: Compose) => {
 	let command = "set -e;";
@@ -161,6 +328,21 @@ export const addDomainToCompose = async (
 		result = randomized;
 	}
 
+	if (!result.services) {
+		throw new Error("Compose file does not define any services");
+	}
+
+	const sidecarTunnels = await resolveCloudflareSidecarTunnels(domains);
+	const sidecarServices = new Map<
+		string,
+		{
+			serviceName: string;
+			envVarName: string;
+			dependsOn: Set<string>;
+			networks: DefinitionsService["networks"];
+		}
+	>();
+
 	for (const domain of domains) {
 		const { serviceName, https } = domain;
 		if (!serviceName) {
@@ -226,6 +408,51 @@ export const addDomainToCompose = async (
 				result.services[serviceName].networks,
 			);
 		}
+
+		if (domain.publishToCloudflare && domain.cloudflareTunnelMode === "sidecar") {
+			if (!domain.cloudflareIntegrationId || !domain.cloudflareTunnelId) {
+				throw new Error(
+					`Domain "${domain.host}" is missing Cloudflare integration or tunnel details for sidecar mode`,
+				);
+			}
+
+			const sidecarKey = buildSidecarTunnelKey(
+				domain.cloudflareIntegrationId,
+				domain.cloudflareTunnelId,
+			);
+			const sidecarTunnel = sidecarTunnels.get(sidecarKey);
+			if (!sidecarTunnel) {
+				throw new Error(
+					`Cloudflare sidecar configuration for domain "${domain.host}" could not be resolved`,
+				);
+			}
+
+			const existingSidecar = sidecarServices.get(sidecarKey);
+			if (existingSidecar) {
+				existingSidecar.dependsOn.add(serviceName);
+				existingSidecar.networks = mergeServiceNetworks(
+					existingSidecar.networks,
+					result.services[serviceName].networks,
+				);
+				continue;
+			}
+
+			sidecarServices.set(sidecarKey, {
+				serviceName: sidecarTunnel.serviceName,
+				envVarName: sidecarTunnel.envVarName,
+				dependsOn: new Set([serviceName]),
+				networks: result.services[serviceName].networks,
+			});
+		}
+	}
+
+	for (const sidecar of sidecarServices.values()) {
+		result.services[sidecar.serviceName] = createCloudflareSidecarService({
+			composeType: compose.composeType,
+			envVarName: sidecar.envVarName,
+			networks: sidecar.networks,
+			dependsOn: Array.from(sidecar.dependsOn),
+		});
 	}
 
 	// Add dokploy-network to the root of the compose file

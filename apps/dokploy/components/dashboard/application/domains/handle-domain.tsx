@@ -70,7 +70,11 @@ export const domain = z
 		serviceName: z.string().optional(),
 		domainType: z.enum(["application", "compose", "preview"]).optional(),
 		publishToCloudflare: z.boolean().optional(),
+		cloudflareTunnelMode: z
+			.enum(["existing-instance", "sidecar"])
+			.optional(),
 		cloudflareIntegrationId: z.string().optional(),
+		cloudflareTunnelId: z.string().optional(),
 		middlewares: z.array(z.string()).optional(),
 	})
 	.superRefine((input, ctx) => {
@@ -137,6 +141,22 @@ export const domain = z
 			});
 		}
 
+		if (input.publishToCloudflare && !input.cloudflareTunnelMode) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareTunnelMode"],
+				message: "Select how the tunnel should run",
+			});
+		}
+
+		if (input.publishToCloudflare && !input.cloudflareTunnelId) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareTunnelId"],
+				message: "Select a Cloudflare tunnel",
+			});
+		}
+
 		if (input.publishToCloudflare && input.host?.includes("traefik.me")) {
 			ctx.addIssue({
 				code: z.ZodIssueCode.custom,
@@ -151,6 +171,19 @@ export const domain = z
 				path: ["publishToCloudflare"],
 				message:
 					"Cloudflare Tunnel publish does not support custom Traefik entrypoints yet",
+			});
+		}
+
+		if (
+			input.publishToCloudflare &&
+			input.cloudflareTunnelMode === "sidecar" &&
+			input.domainType !== "compose"
+		) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareTunnelMode"],
+				message:
+					"Cloudflare sidecar mode is currently supported for compose services only",
 			});
 		}
 	});
@@ -253,7 +286,9 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 			serviceName: undefined,
 			domainType: type,
 			publishToCloudflare: false,
+			cloudflareTunnelMode: "existing-instance",
 			cloudflareIntegrationId: undefined,
+			cloudflareTunnelId: undefined,
 			middlewares: [],
 		},
 		mode: "onChange",
@@ -265,11 +300,38 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 	const domainType = form.watch("domainType");
 	const host = form.watch("host");
 	const publishToCloudflare = form.watch("publishToCloudflare");
+	const cloudflareTunnelMode = form.watch("cloudflareTunnelMode");
 	const selectedCloudflareIntegrationId = form.watch("cloudflareIntegrationId");
+	const selectedCloudflareTunnelId = form.watch("cloudflareTunnelId");
 	const isTraefikMeDomain = host?.includes("traefik.me") || false;
 	const selectedCloudflareIntegration = cloudflareIntegrations?.find(
 		(integration) =>
 			integration.cloudflareIntegrationId === selectedCloudflareIntegrationId,
+	);
+	const {
+		data: cloudflareTunnelOptions,
+		isLoading: isLoadingCloudflareTunnelOptions,
+	} = api.domain.cloudflareTunnelOptions.useQuery(
+		type === "application"
+			? {
+				applicationId: id,
+				cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
+			}
+			: {
+				composeId: id,
+				cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
+			},
+		{
+			enabled:
+				isOpen &&
+				publishToCloudflare &&
+				!!id &&
+				!!selectedCloudflareIntegrationId,
+			refetchOnWindowFocus: false,
+		},
+	);
+	const selectedCloudflareTunnel = cloudflareTunnelOptions?.tunnels.find(
+		(tunnel) => tunnel.id === selectedCloudflareTunnelId,
 	);
 
 	useEffect(() => {
@@ -288,8 +350,11 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				serviceName: data?.serviceName || undefined,
 				domainType: data?.domainType || type,
 				publishToCloudflare: data?.publishToCloudflare || false,
+				cloudflareTunnelMode:
+					data?.cloudflareTunnelMode || "existing-instance",
 				cloudflareIntegrationId:
 					data?.cloudflareIntegrationId || undefined,
+				cloudflareTunnelId: data?.cloudflareTunnelId || undefined,
 				middlewares: data?.middlewares || [],
 			});
 		}
@@ -308,7 +373,9 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				customCertResolver: undefined,
 				domainType: type,
 				publishToCloudflare: false,
+					cloudflareTunnelMode: "existing-instance",
 				cloudflareIntegrationId: undefined,
+				cloudflareTunnelId: undefined,
 				middlewares: [],
 			});
 		}
@@ -328,6 +395,56 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 			);
 		}
 	}, [cloudflareIntegrations, domainId, form, isOpen]);
+
+	useEffect(() => {
+		if (!publishToCloudflare) {
+			return;
+		}
+
+		if (!selectedCloudflareIntegrationId) {
+			if (form.getValues("cloudflareTunnelId")) {
+				form.setValue("cloudflareTunnelId", undefined, {
+					shouldValidate: true,
+				});
+			}
+			return;
+		}
+
+		const tunnels = cloudflareTunnelOptions?.tunnels ?? [];
+		if (tunnels.length === 0) {
+			return;
+		}
+
+		const currentTunnelId = form.getValues("cloudflareTunnelId");
+		const hasCurrentTunnel = tunnels.some(
+			(tunnel) => tunnel.id === currentTunnelId,
+		);
+
+		if (hasCurrentTunnel) {
+			return;
+		}
+
+		const preferredTunnelId =
+			(selectedCloudflareIntegration?.defaultTunnelId &&
+			tunnels.some(
+				(tunnel) =>
+					tunnel.id === selectedCloudflareIntegration.defaultTunnelId,
+			)
+				? selectedCloudflareIntegration.defaultTunnelId
+				: undefined) || tunnels[0]?.id;
+
+		if (preferredTunnelId) {
+			form.setValue("cloudflareTunnelId", preferredTunnelId, {
+				shouldValidate: true,
+			});
+		}
+	}, [
+		cloudflareTunnelOptions,
+		form,
+		publishToCloudflare,
+		selectedCloudflareIntegration,
+		selectedCloudflareIntegrationId,
+	]);
 
 	// Separate effect for handling custom cert resolver validation
 	useEffect(() => {
@@ -355,6 +472,12 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				composeId: id,
 			}),
 			...data,
+			cloudflareTunnelMode: data.publishToCloudflare
+				? data.cloudflareTunnelMode
+				: undefined,
+			cloudflareTunnelId: data.publishToCloudflare
+				? data.cloudflareTunnelId
+				: undefined,
 			customEntrypoint: data.useCustomEntrypoint ? data.customEntrypoint : null,
 		})
 			.then(async () => {
@@ -720,18 +843,93 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 													)}
 												/>
 
+												<FormField
+													control={form.control}
+													name="cloudflareTunnelMode"
+													render={({ field }) => (
+														<FormItem>
+															<FormLabel>Tunnel Runtime</FormLabel>
+															<Select
+																onValueChange={field.onChange}
+																value={field.value}
+															>
+																<FormControl>
+																	<SelectTrigger>
+																		<SelectValue placeholder="Select how the tunnel should run" />
+																	</SelectTrigger>
+																</FormControl>
+																<SelectContent>
+																	<SelectItem value="existing-instance">
+																		Use Existing Tunnel Instance
+																	</SelectItem>
+																	<SelectItem value="sidecar" disabled={type !== "compose"}>
+																		Start Cloudflared Sidecar
+																	</SelectItem>
+																</SelectContent>
+															</Select>
+															<FormDescription>
+																{type === "compose"
+																	? "Use an already running cloudflared instance, or let Dokploy start a sidecar in this compose deployment."
+																	: "Application services currently support the existing tunnel instance mode only."}
+															</FormDescription>
+															<FormMessage />
+														</FormItem>
+													)}
+												/>
+
 												{selectedCloudflareIntegration ? (
-													<AlertBlock
-														type={
-															selectedCloudflareIntegration.defaultTunnelId
-																? "info"
-																: "warning"
-														}
-													>
-														{selectedCloudflareIntegration.defaultTunnelId
-															? `Dokploy will use tunnel '${selectedCloudflareIntegration.defaultTunnelName || "Unnamed tunnel"}'${selectedCloudflareIntegration.defaultZoneName ? ` in zone '${selectedCloudflareIntegration.defaultZoneName}'` : ""}.`
-															: "The selected Cloudflare integration does not have a default tunnel yet. Configure one in Settings → Cloudflare before saving this domain."}
-													</AlertBlock>
+													<>
+														<FormField
+															control={form.control}
+															name="cloudflareTunnelId"
+															render={({ field }) => (
+																<FormItem>
+																	<FormLabel>Cloudflare Tunnel</FormLabel>
+																	<Select
+																		onValueChange={field.onChange}
+																		value={field.value}
+																		disabled={isLoadingCloudflareTunnelOptions}
+																	>
+																		<FormControl>
+																			<SelectTrigger>
+																				<SelectValue placeholder="Select a Cloudflare tunnel" />
+																			</SelectTrigger>
+																		</FormControl>
+																		<SelectContent>
+																			{cloudflareTunnelOptions?.tunnels.map((tunnel) => (
+																				<SelectItem key={tunnel.id} value={tunnel.id}>
+																					{tunnel.name}
+																				</SelectItem>
+																			))}
+																		</SelectContent>
+																	</Select>
+																	{isLoadingCloudflareTunnelOptions ? (
+																		<div className="flex items-center gap-2 text-sm text-muted-foreground">
+																			<Loader2 className="size-4 animate-spin" />
+																			Loading Cloudflare tunnels...
+																		</div>
+																	) : null}
+																	<FormMessage />
+																</FormItem>
+															)}
+														/>
+
+														<AlertBlock
+															type={
+																cloudflareTunnelOptions?.tunnels.length
+																	? "info"
+																	: "warning"
+															}
+														>
+															{cloudflareTunnelOptions?.tunnels.length
+																? selectedCloudflareTunnel
+																	? cloudflareTunnelMode === "sidecar"
+																		? `Dokploy will start a cloudflared sidecar for tunnel '${selectedCloudflareTunnel.name}' and route '${host || "this host"}' directly to the selected compose service.`
+																		: `Dokploy will publish '${host || "this host"}' into tunnel '${selectedCloudflareTunnel.name}'.${selectedCloudflareIntegration.defaultTunnelId === selectedCloudflareTunnel.id ? " This integration default is preselected for convenience." : ""}`
+																	: "Select which Cloudflare tunnel should receive this domain route."
+																: "No Cloudflare tunnels were found for the selected integration/account."}
+														</AlertBlock>
+													</>
 												) : null}
 											</div>
 										)}

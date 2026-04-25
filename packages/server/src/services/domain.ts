@@ -16,6 +16,7 @@ import { findApplicationById } from "./application";
 import { detectCDNProvider } from "./cdn";
 import {
 	findCloudflareIntegrationById,
+	findCloudflareTunnelById,
 	findCloudflareZoneForHostname,
 	removeCloudflareDnsRecord,
 	removeCloudflareTunnelIngress,
@@ -29,6 +30,7 @@ export type Domain = typeof domains.$inferSelect;
 
 const clearCloudflareFields = (): Partial<Domain> => ({
 	publishToCloudflare: false,
+	cloudflareTunnelMode: "existing-instance",
 	cloudflareIntegrationId: null,
 	cloudflareZoneId: null,
 	cloudflareZoneName: null,
@@ -57,12 +59,44 @@ const hasCloudflareBindingChanged = (
 		currentDomain.https !== nextDomain.https ||
 		currentDomain.cloudflareIntegrationId !==
 		nextDomain.cloudflareIntegrationId ||
+		currentDomain.cloudflareTunnelMode !== nextDomain.cloudflareTunnelMode ||
 		currentDomain.cloudflareTunnelId !== nextTunnelId ||
 		!nextDomain.publishToCloudflare
 	);
 };
 
 const getCloudflareOriginService = async (domain: Domain) => {
+	if (domain.cloudflareTunnelMode === "sidecar") {
+		if (!domain.composeId) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message:
+					"Cloudflare sidecar mode is currently supported for compose services only",
+			});
+		}
+
+		if (!domain.serviceName) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message:
+					"A compose service name is required before Dokploy can create a Cloudflare sidecar",
+			});
+		}
+
+		if (!domain.port) {
+			throw new TRPCError({
+				code: "BAD_REQUEST",
+				message:
+					"A container port is required before Dokploy can create a Cloudflare sidecar",
+			});
+		}
+
+		return {
+			service: `http://${domain.serviceName}:${domain.port}`,
+			originRequest: undefined,
+		};
+	}
+
 	if (domain.customEntrypoint) {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
@@ -168,21 +202,30 @@ export const syncCloudflareDomain = async (
 	const integration = await findCloudflareIntegrationById(
 		nextDomain.cloudflareIntegrationId,
 	);
-	if (!integration.defaultTunnelId) {
+	const tunnelId = nextDomain.cloudflareTunnelId || integration.defaultTunnelId;
+	if (!tunnelId) {
 		throw new TRPCError({
 			code: "BAD_REQUEST",
 			message:
-				"The selected Cloudflare integration does not have a default tunnel configured",
+				"Select a Cloudflare tunnel for this domain or configure a default tunnel on the integration",
 		});
 	}
 
+	const tunnel =
+		integration.defaultTunnelId === tunnelId && integration.defaultTunnelName
+			? {
+				id: integration.defaultTunnelId,
+				name: integration.defaultTunnelName,
+			}
+			: await findCloudflareTunnelById({
+				apiToken: integration.apiToken,
+				accountId: integration.accountId,
+				tunnelId,
+			});
+
 	if (
 		currentDomain?.publishToCloudflare &&
-		hasCloudflareBindingChanged(
-			currentDomain,
-			nextDomain,
-			integration.defaultTunnelId,
-		)
+		hasCloudflareBindingChanged(currentDomain, nextDomain, tunnel.id)
 	) {
 		await removeCloudflareDomainSync(currentDomain);
 	}
@@ -198,7 +241,7 @@ export const syncCloudflareDomain = async (
 	await upsertCloudflareTunnelIngress({
 		apiToken: integration.apiToken,
 		accountId: integration.accountId,
-		tunnelId: integration.defaultTunnelId,
+		tunnelId: tunnel.id,
 		hostname: nextDomain.host,
 		path: nextDomain.path,
 		service: origin.service,
@@ -209,7 +252,7 @@ export const syncCloudflareDomain = async (
 		apiToken: integration.apiToken,
 		zoneId: zone.id,
 		hostname: nextDomain.host,
-		tunnelId: integration.defaultTunnelId,
+		tunnelId: tunnel.id,
 		domainId: nextDomain.domainId,
 		existingDnsRecordId:
 			currentDomain?.cloudflareDnsRecordId || nextDomain.cloudflareDnsRecordId,
@@ -217,11 +260,13 @@ export const syncCloudflareDomain = async (
 
 	return {
 		publishToCloudflare: true,
+		cloudflareTunnelMode:
+			nextDomain.cloudflareTunnelMode || "existing-instance",
 		cloudflareIntegrationId: integration.cloudflareIntegrationId,
 		cloudflareZoneId: zone.id,
 		cloudflareZoneName: zone.name,
-		cloudflareTunnelId: integration.defaultTunnelId,
-		cloudflareTunnelName: integration.defaultTunnelName,
+		cloudflareTunnelId: tunnel.id,
+		cloudflareTunnelName: tunnel.name,
 		cloudflareDnsRecordId: dnsRecord.id,
 	} satisfies Partial<Domain>;
 };

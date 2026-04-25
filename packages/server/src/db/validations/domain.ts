@@ -21,7 +21,11 @@ export const domain = z
 		certificateType: z.enum(["letsencrypt", "none", "custom"]).optional(),
 		customCertResolver: z.string(),
 		publishToCloudflare: z.boolean().optional(),
+		cloudflareTunnelMode: z
+			.enum(["existing-instance", "sidecar"])
+			.optional(),
 		cloudflareIntegrationId: z.string().optional(),
+		cloudflareTunnelId: z.string().optional(),
 		middlewares: z.array(z.string()).optional(),
 	})
 	.superRefine((input, ctx) => {
@@ -49,6 +53,14 @@ export const domain = z
 			});
 		}
 
+		if (input.publishToCloudflare && !input.cloudflareTunnelMode) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareTunnelMode"],
+				message: "Select how the tunnel should run",
+			});
+		}
+
 		if (input.publishToCloudflare && input.host?.includes("traefik.me")) {
 			ctx.addIssue({
 				code: z.ZodIssueCode.custom,
@@ -64,6 +76,14 @@ export const domain = z
 				path: ["stripPath"],
 				message:
 					"Strip path can only be enabled when a path other than '/' is specified",
+			});
+		}
+
+		if (input.publishToCloudflare && input.cloudflareTunnelMode === "sidecar") {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareTunnelMode"],
+				message: "Cloudflare sidecar mode is currently supported for compose services only",
 			});
 		}
 
@@ -103,7 +123,11 @@ export const domainCompose = z
 		customCertResolver: z.string(),
 		serviceName: z.string().min(1, { message: "Service name is required" }),
 		publishToCloudflare: z.boolean().optional(),
+		cloudflareTunnelMode: z
+			.enum(["existing-instance", "sidecar"])
+			.optional(),
 		cloudflareIntegrationId: z.string().optional(),
+		cloudflareTunnelId: z.string().optional(),
 		middlewares: z.array(z.string()).optional(),
 	})
 	.superRefine((input, ctx) => {
@@ -128,6 +152,14 @@ export const domainCompose = z
 				code: z.ZodIssueCode.custom,
 				path: ["cloudflareIntegrationId"],
 				message: "Select a Cloudflare integration",
+			});
+		}
+
+		if (input.publishToCloudflare && !input.cloudflareTunnelMode) {
+			ctx.addIssue({
+				code: z.ZodIssueCode.custom,
+				path: ["cloudflareTunnelMode"],
+				message: "Select how the tunnel should run",
 			});
 		}
 

@@ -34,6 +34,7 @@ describe("Host rule format regression tests", () => {
 		stripPath: false,
 		customEntrypoint: null,
 		publishToCloudflare: false,
+		cloudflareTunnelMode: "existing-instance",
 		cloudflareIntegrationId: null,
 		cloudflareZoneId: null,
 		cloudflareZoneName: null,

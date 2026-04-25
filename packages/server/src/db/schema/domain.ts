@@ -24,6 +24,11 @@ export const domainType = pgEnum("domainType", [
 	"preview",
 ]);
 
+export const cloudflareTunnelMode = pgEnum("cloudflareTunnelMode", [
+	"existing-instance",
+	"sidecar",
+]);
+
 export const domains = pgTable("domain", {
 	domainId: text("domainId")
 		.notNull()
@@ -59,6 +64,9 @@ export const domains = pgTable("domain", {
 	publishToCloudflare: boolean("publishToCloudflare")
 		.notNull()
 		.default(false),
+	cloudflareTunnelMode: cloudflareTunnelMode("cloudflareTunnelMode")
+		.notNull()
+		.default("existing-instance"),
 	cloudflareIntegrationId: text("cloudflareIntegrationId").references(
 		() => cloudflareIntegration.cloudflareIntegrationId,
 		{ onDelete: "set null" },
@@ -94,6 +102,10 @@ const createSchema = createInsertSchema(domains, {
 	// Override pgEnum so Zod 4 infers only string literals, not numeric enum index
 	domainType: z.enum(["compose", "application", "preview"]).optional(),
 	publishToCloudflare: z.boolean().optional(),
+	cloudflareTunnelMode: z
+		.enum(["existing-instance", "sidecar"])
+		.optional()
+		.nullable(),
 	cloudflareIntegrationId: z.string().optional().nullable(),
 	cloudflareZoneId: z.string().optional().nullable(),
 	cloudflareZoneName: z.string().optional().nullable(),
@@ -119,7 +131,9 @@ export const apiCreateDomain = createSchema.pick({
 	stripPath: true,
 	middlewares: true,
 	publishToCloudflare: true,
+	cloudflareTunnelMode: true,
 	cloudflareIntegrationId: true,
+	cloudflareTunnelId: true,
 });
 
 export const apiFindDomain = z.object({
@@ -153,6 +167,7 @@ export const apiUpdateDomain = createSchema
 		stripPath: true,
 		middlewares: true,
 		publishToCloudflare: true,
+		cloudflareTunnelMode: true,
 		cloudflareIntegrationId: true,
 		cloudflareZoneId: true,
 		cloudflareZoneName: true,
