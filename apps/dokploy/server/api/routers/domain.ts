@@ -12,6 +12,7 @@ import {
 	getWebServerSettings,
 	listCloudflareIntegrationsByOrganizationId,
 	listCloudflareTunnels,
+	listSharedManagedCloudflareTunnelRuntimes,
 	manageDomain,
 	removeCloudflareDomainSync,
 	removeDomain,
@@ -37,6 +38,81 @@ import {
 	apiFindOneApplication,
 	apiUpdateDomain,
 } from "@/server/db/schema";
+
+const getSharedRuntimeKey = ({
+	cloudflareIntegrationId,
+	cloudflareTunnelId,
+	serverId,
+}: {
+	cloudflareIntegrationId?: string | null;
+	cloudflareTunnelId?: string | null;
+	serverId?: string | null;
+}) =>
+	`${cloudflareIntegrationId || ""}::${cloudflareTunnelId || ""}::${serverId || ""}`;
+
+type ApplicationDomainRecord = Awaited<
+	ReturnType<typeof findDomainsByApplicationId>
+>[number];
+type ComposeDomainRecord = Awaited<
+	ReturnType<typeof findDomainsByComposeId>
+>[number];
+type DomainRecordWithService =
+	| (ApplicationDomainRecord & { compose?: null })
+	| (ComposeDomainRecord & { application?: null });
+
+const attachSharedRuntimeToDomains = async (
+	domainRecords: DomainRecordWithService[],
+	organizationId: string,
+) => {
+	const needsRuntimeData = domainRecords.some(
+		(domain) =>
+			domain.publishToCloudflare &&
+			domain.cloudflareTunnelMode === "shared-managed",
+	);
+
+	if (!needsRuntimeData) {
+		return domainRecords.map((domain) => ({
+			...domain,
+			cloudflareSharedRuntime: null,
+		}));
+	}
+
+	const runtimes =
+		await listSharedManagedCloudflareTunnelRuntimes(organizationId);
+	const runtimeMap = new Map(
+		runtimes.map((runtime) => [
+			getSharedRuntimeKey({
+				cloudflareIntegrationId: runtime.cloudflareIntegrationId,
+				cloudflareTunnelId: runtime.cloudflareTunnelId,
+				serverId: runtime.serverId,
+			}),
+			runtime,
+		]),
+	);
+
+	return domainRecords.map((domain) => {
+		const serverId =
+			("application" in domain ? domain.application?.serverId : null) ??
+			("compose" in domain ? domain.compose?.serverId : null) ??
+			null;
+		const runtime =
+			domain.publishToCloudflare &&
+				domain.cloudflareTunnelMode === "shared-managed"
+				? runtimeMap.get(
+					getSharedRuntimeKey({
+						cloudflareIntegrationId: domain.cloudflareIntegrationId,
+						cloudflareTunnelId: domain.cloudflareTunnelId,
+						serverId,
+					}),
+				) || null
+				: null;
+
+		return {
+			...domain,
+			cloudflareSharedRuntime: runtime,
+		};
+	});
+};
 
 export const domainRouter = createTRPCRouter({
 	cloudflareOptions: protectedProcedure
@@ -223,7 +299,13 @@ export const domainRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.applicationId, {
 				domain: ["read"],
 			});
-			return await findDomainsByApplicationId(input.applicationId);
+			const domainRecords = await findDomainsByApplicationId(
+				input.applicationId,
+			);
+			return attachSharedRuntimeToDomains(
+				domainRecords,
+				ctx.session.activeOrganizationId,
+			);
 		}),
 	byComposeId: protectedProcedure
 		.input(apiFindCompose)
@@ -231,7 +313,11 @@ export const domainRouter = createTRPCRouter({
 			await checkServicePermissionAndAccess(ctx, input.composeId, {
 				domain: ["read"],
 			});
-			return await findDomainsByComposeId(input.composeId);
+			const domainRecords = await findDomainsByComposeId(input.composeId);
+			return attachSharedRuntimeToDomains(
+				domainRecords,
+				ctx.session.activeOrganizationId,
+			);
 		}),
 	generateDomain: withPermission("domain", "create")
 		.input(z.object({ appName: z.string(), serverId: z.string().optional() }))

@@ -1,4 +1,5 @@
 import {
+	Activity,
 	AlertTriangle,
 	CheckCircle2,
 	Cloud,
@@ -37,8 +38,15 @@ type DomainHealthSummary = {
 	zoneLabel: string | null;
 	originLabel: string;
 	dnsLabel: string;
+	sharedRuntimeStatusLabel: string | null;
+	sharedRuntimeObservedLabel: string | null;
+	sharedRuntimeMessage: string | null;
+	sharedRuntimeNeedsRepair: boolean;
 	issues: string[];
 };
+
+const getSharedRuntime = (domain: DomainRecord) =>
+	"cloudflareSharedRuntime" in domain ? domain.cloudflareSharedRuntime : null;
 
 const getRuntimeLabel = (domain: DomainRecord) => {
 	if (!domain.publishToCloudflare) {
@@ -88,11 +96,16 @@ const getDomainHealthSummary = (domain: DomainRecord): DomainHealthSummary => {
 			zoneLabel: null,
 			originLabel: getOriginLabel(domain),
 			dnsLabel: "Managed outside Cloudflare Tunnel",
+			sharedRuntimeStatusLabel: null,
+			sharedRuntimeObservedLabel: null,
+			sharedRuntimeMessage: null,
+			sharedRuntimeNeedsRepair: false,
 			issues: [],
 		};
 	}
 
 	const issues: string[] = [];
+	const sharedRuntime = getSharedRuntime(domain);
 
 	if (!domain.cloudflareIntegrationId) {
 		issues.push("Cloudflare integration is missing.");
@@ -120,6 +133,22 @@ const getDomainHealthSummary = (domain: DomainRecord): DomainHealthSummary => {
 		}
 	}
 
+	if (domain.cloudflareTunnelMode === "shared-managed") {
+		if (!sharedRuntime) {
+			issues.push("Shared connector runtime record could not be found.");
+		} else {
+			if (sharedRuntime.status !== "running") {
+				issues.push(`Shared connector status is '${sharedRuntime.status}'.`);
+			}
+
+			if (sharedRuntime.observedHealth.status !== "healthy") {
+				issues.push(
+					`Shared connector live health is '${sharedRuntime.observedHealth.status}'.`,
+				);
+			}
+		}
+	}
+
 	return {
 		status: issues.length > 0 ? "warning" : "healthy",
 		statusLabel: issues.length > 0 ? "Needs Attention" : "Cloudflare Healthy",
@@ -128,7 +157,23 @@ const getDomainHealthSummary = (domain: DomainRecord): DomainHealthSummary => {
 		tunnelLabel: domain.cloudflareTunnelName || "Missing tunnel",
 		zoneLabel: domain.cloudflareZoneName || "Missing zone",
 		originLabel: getOriginLabel(domain),
-		dnsLabel: domain.cloudflareDnsRecordId ? "Managed DNS record" : "Pending DNS sync",
+		dnsLabel: domain.cloudflareDnsRecordId
+			? "Managed DNS record"
+			: "Pending DNS sync",
+		sharedRuntimeStatusLabel: sharedRuntime
+			? sharedRuntime.status
+			: domain.cloudflareTunnelMode === "shared-managed"
+				? "Missing runtime"
+				: null,
+		sharedRuntimeObservedLabel: sharedRuntime
+			? `${sharedRuntime.observedHealth.status} (${sharedRuntime.observedHealth.state})`
+			: null,
+		sharedRuntimeMessage:
+			sharedRuntime?.observedHealth.message || sharedRuntime?.lastError || null,
+		sharedRuntimeNeedsRepair:
+			!!sharedRuntime &&
+			(sharedRuntime.status !== "running" ||
+				sharedRuntime.observedHealth.status !== "healthy"),
 		issues,
 	};
 };
@@ -206,6 +251,21 @@ export const DomainHealthBadges = ({ domain }: { domain: DomainRecord }) => {
 					{summary.runtimeLabel}
 				</Badge>
 			) : null}
+			{summary.sharedRuntimeStatusLabel ? (
+				<Badge
+					variant="outline"
+					className={
+						summary.sharedRuntimeNeedsRepair
+							? "border-orange-500/30 bg-orange-500/10 text-orange-600"
+							: "border-green-500/30 bg-green-500/10 text-green-600"
+					}
+				>
+					<Activity className="mr-1 size-3" />
+					{summary.sharedRuntimeNeedsRepair
+						? "Shared Runtime Drift"
+						: "Shared Runtime Healthy"}
+				</Badge>
+			) : null}
 			{domain.publishToCloudflare ? (
 				<Badge variant="outline">
 					<Cloud className="mr-1 size-3" />
@@ -252,6 +312,22 @@ export const DomainHealthPanel = ({
 						<span className="font-medium">{summary.runtimeLabel}</span>
 					</div>
 				) : null}
+				{summary.sharedRuntimeStatusLabel ? (
+					<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+						<span className="text-muted-foreground">Connector Status</span>
+						<span className="font-medium capitalize">
+							{summary.sharedRuntimeStatusLabel}
+						</span>
+					</div>
+				) : null}
+				{summary.sharedRuntimeObservedLabel ? (
+					<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+						<span className="text-muted-foreground">Live Runtime</span>
+						<span className="font-medium">
+							{summary.sharedRuntimeObservedLabel}
+						</span>
+					</div>
+				) : null}
 				{summary.tunnelLabel ? (
 					<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
 						<span className="text-muted-foreground">Tunnel</span>
@@ -273,6 +349,16 @@ export const DomainHealthPanel = ({
 			{validationState?.resolvedIp ? (
 				<div className="text-xs text-muted-foreground">
 					Resolved IP: {validationState.resolvedIp}
+				</div>
+			) : null}
+
+			{summary.sharedRuntimeMessage ? (
+				<div className="grid gap-2 rounded-md border border-orange-500/30 bg-orange-500/5 p-3 text-sm text-orange-700 dark:text-orange-400">
+					<div className="flex items-center gap-2 font-medium">
+						<Activity className="size-4" />
+						Shared Runtime Detail
+					</div>
+					<div>{summary.sharedRuntimeMessage}</div>
 				</div>
 			) : null}
 

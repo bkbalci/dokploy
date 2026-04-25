@@ -4,8 +4,11 @@ import {
     findCloudflareIntegrationById,
     listCloudflareIntegrationsByOrganizationId,
     listSharedManagedCloudflareTunnelRuntimes,
+    reconcileAllSharedManagedCloudflareTunnelRuntimes,
     recreateSharedManagedCloudflareTunnelRuntime,
     removeCloudflareIntegration,
+    repairDriftedSharedManagedCloudflareTunnelRuntimes,
+    repairSharedManagedCloudflareTunnelRuntime,
     restartSharedManagedCloudflareTunnelRuntime,
     testCloudflareConnection,
     updateCloudflareIntegration,
@@ -124,6 +127,55 @@ export const cloudflareRouter = createTRPCRouter({
             ctx.session.activeOrganizationId,
         );
     }),
+    reconcileSharedRuntimes: adminProcedure.mutation(async ({ ctx }) => {
+        const result = await reconcileAllSharedManagedCloudflareTunnelRuntimes(
+            ctx.session.activeOrganizationId,
+        );
+
+        await audit(ctx, {
+            action: "update",
+            resourceType: "settings",
+            resourceId: "cloudflare-shared-runtime-reconcile",
+            resourceName: `Reconciled ${result.reconciledCount} shared runtimes`,
+        });
+
+        return result;
+    }),
+    repairDriftedSharedRuntimes: adminProcedure.mutation(async ({ ctx }) => {
+        const result = await repairDriftedSharedManagedCloudflareTunnelRuntimes(
+            ctx.session.activeOrganizationId,
+        );
+
+        await audit(ctx, {
+            action: "update",
+            resourceType: "settings",
+            resourceId: "cloudflare-shared-runtime-repair",
+            resourceName: `Repaired ${result.repairedCount} shared runtimes`,
+        });
+
+        return result;
+    }),
+    repairSharedRuntime: adminProcedure
+        .input(
+            z.object({
+                cloudflareTunnelRuntimeId: z.string().min(1),
+            }),
+        )
+        .mutation(async ({ input, ctx }) => {
+            const runtime = await repairSharedManagedCloudflareTunnelRuntime({
+                organizationId: ctx.session.activeOrganizationId,
+                cloudflareTunnelRuntimeId: input.cloudflareTunnelRuntimeId,
+            });
+
+            await audit(ctx, {
+                action: "update",
+                resourceType: "settings",
+                resourceId: input.cloudflareTunnelRuntimeId,
+                resourceName: runtime.summary.cloudflareTunnelName,
+            });
+
+            return runtime;
+        }),
     restartSharedRuntime: adminProcedure
         .input(
             z.object({

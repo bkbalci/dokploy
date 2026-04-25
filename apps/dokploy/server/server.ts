@@ -5,6 +5,7 @@ import {
 	createDefaultTraefikConfig,
 	IS_CLOUD,
 	initCancelDeployments,
+	initCloudflareTunnelRuntimeReconcileJob,
 	initCronJobs,
 	initEnterpriseBackupCronJobs,
 	initializeNetwork,
@@ -62,6 +63,7 @@ void app.prepare().then(async () => {
 			createDefaultMiddlewares();
 			await initializeNetwork();
 			await initCronJobs();
+			await initCloudflareTunnelRuntimeReconcileJob();
 			await initSchedules();
 			await initCancelDeployments();
 			await initVolumeBackupsCronJobs();

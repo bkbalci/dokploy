@@ -59,10 +59,22 @@ export const ShowCloudflareRuntimes = () => {
 		api.cloudflare.restartSharedRuntime.useMutation();
 	const { mutateAsync: recreateRuntime, isPending: isRecreating } =
 		api.cloudflare.recreateSharedRuntime.useMutation();
+	const { mutateAsync: repairRuntime, isPending: isRepairing } =
+		api.cloudflare.repairSharedRuntime.useMutation();
+	const { mutateAsync: repairDriftedRuntimes, isPending: isBulkRepairing } =
+		api.cloudflare.repairDriftedSharedRuntimes.useMutation();
+	const { mutateAsync: reconcileRuntimes, isPending: isReconciling } =
+		api.cloudflare.reconcileSharedRuntimes.useMutation();
 	const { mutateAsync: cleanupUnusedRuntimes, isPending: isCleaning } =
 		api.cloudflare.cleanupUnusedSharedRuntimes.useMutation();
 
 	const orphanedRuntimes = data?.filter((runtime) => runtime.referenceCount === 0) || [];
+	const driftedRuntimes =
+		data?.filter(
+			(runtime) =>
+				runtime.referenceCount > 0 &&
+				(runtime.status !== "running" || runtime.observedHealth.status !== "healthy"),
+		) || [];
 
 	const refreshRuntimeData = async () => {
 		await utils.cloudflare.sharedRuntimes.invalidate();
@@ -83,6 +95,51 @@ export const ShowCloudflareRuntimes = () => {
 						</CardDescription>
 					</div>
 					<div className="flex gap-2 flex-wrap">
+						<Button
+							variant="outline"
+							onClick={async () => {
+								await repairDriftedRuntimes()
+									.then(async (result) => {
+										toast.success(
+											result.attemptedCount > 0
+												? `Repaired ${result.repairedCount}/${result.attemptedCount} drifted runtimes`
+												: "No drifted shared runtimes found",
+										);
+										await refreshRuntimeData();
+									})
+									.catch((error) => {
+										toast.error("Failed to repair drifted runtimes", {
+											description:
+												error instanceof Error ? error.message : "Unknown error",
+										});
+									});
+							}}
+							isLoading={isBulkRepairing}
+							disabled={driftedRuntimes.length === 0}
+						>
+							<Wrench className="size-4" /> Repair Drift
+						</Button>
+						<Button
+							variant="outline"
+							onClick={async () => {
+								await reconcileRuntimes()
+									.then(async (result) => {
+										toast.success(
+											`Reconciled ${result.reconciledCount} runtimes, ${result.changedCount} changed`,
+										);
+										await refreshRuntimeData();
+									})
+									.catch((error) => {
+										toast.error("Failed to reconcile shared runtimes", {
+											description:
+												error instanceof Error ? error.message : "Unknown error",
+										});
+									});
+							}}
+							isLoading={isReconciling}
+						>
+							<RefreshCw className="size-4" /> Reconcile Status
+						</Button>
 						<Button
 							variant="outline"
 							onClick={() => refreshRuntimeData()}
@@ -156,6 +213,11 @@ export const ShowCloudflareRuntimes = () => {
 														<Badge variant="outline" className="border-yellow-500/30 bg-yellow-500/10 text-yellow-600">
 															Unused
 														</Badge>
+													) : runtime.status !== "running" ||
+													  runtime.observedHealth.status !== "healthy" ? (
+														<Badge variant="outline" className="border-orange-500/30 bg-orange-500/10 text-orange-600">
+															Repair Suggested
+														</Badge>
 													) : null}
 												</div>
 												<div className="text-xs text-muted-foreground grid gap-1">
@@ -173,6 +235,32 @@ export const ShowCloudflareRuntimes = () => {
 												</div>
 											</div>
 											<div className="flex gap-2 flex-wrap">
+												<Button
+													variant="outline"
+													onClick={async () => {
+														await repairRuntime({
+															cloudflareTunnelRuntimeId: runtime.cloudflareTunnelRuntimeId,
+														})
+															.then(async (result) => {
+																toast.success(
+																	result.action === "noop"
+																		? "Shared runtime does not need repair"
+																		: "Shared runtime repaired",
+																);
+																await refreshRuntimeData();
+															})
+															.catch((error) => {
+																toast.error("Failed to repair shared runtime", {
+																	description:
+																		error instanceof Error ? error.message : "Unknown error",
+																});
+															});
+													}}
+													isLoading={isRepairing}
+													disabled={runtime.referenceCount === 0}
+												>
+													<Wrench className="size-4" /> Repair
+												</Button>
 												<Button
 													variant="outline"
 													onClick={async () => {

@@ -6,6 +6,7 @@ import { TRPCError } from "@trpc/server";
 import type { ContainerCreateOptions, CreateServiceOptions } from "dockerode";
 import { and, eq, isNull, ne } from "drizzle-orm";
 import { nanoid } from "nanoid";
+import { scheduledJobs, scheduleJob } from "node-schedule";
 import { findApplicationById } from "./application";
 import {
     findCloudflareIntegrationById,
@@ -16,6 +17,9 @@ import { findComposeById } from "./compose";
 const CLOUDFLARED_IMAGE = "cloudflare/cloudflared:latest";
 const DOKPLOY_NETWORK = "dokploy-network";
 const TRAEFIK_RESOURCE_NAME = "dokploy-traefik";
+const SHARED_RUNTIME_RECONCILE_JOB_NAME =
+    "cloudflare-shared-runtime-reconcile";
+const SHARED_RUNTIME_RECONCILE_CRON = "*/5 * * * *";
 
 export type CloudflareTunnelRuntime =
     typeof cloudflareTunnelRuntime.$inferSelect;
@@ -44,6 +48,21 @@ export type SharedManagedCloudflareTunnelRuntimeSummary = CloudflareTunnelRuntim
     integrationName: string;
     serverName: string | null;
     observedHealth: CloudflareTunnelRuntimeObservedHealth;
+};
+
+export type SharedManagedCloudflareTunnelRuntimeReconcileResult = {
+    checkedAt: string;
+    reconciledCount: number;
+    changedCount: number;
+    failedCount: number;
+};
+
+export type SharedManagedCloudflareTunnelRuntimeRepairResult = {
+    checkedAt: string;
+    attemptedCount: number;
+    repairedCount: number;
+    skippedCount: number;
+    failedCount: number;
 };
 
 type RuntimeScope = {
@@ -528,6 +547,75 @@ const getObservedRuntimeHealth = async (
     };
 };
 
+const mapObservedHealthToRuntimeState = (
+    observedHealth: CloudflareTunnelRuntimeObservedHealth,
+) => {
+    if (observedHealth.status === "missing") {
+        return {
+            status: "stopped" as const,
+            lastError:
+                observedHealth.message ||
+                "Cloudflare shared runtime resource was not found on the target server.",
+        };
+    }
+
+    if (observedHealth.status === "unhealthy") {
+        return {
+            status: "error" as const,
+            lastError:
+                observedHealth.message || "Cloudflare shared runtime is unhealthy.",
+        };
+    }
+
+    return {
+        status: "running" as const,
+        lastError:
+            observedHealth.status === "degraded"
+                ? observedHealth.message
+                : null,
+    };
+};
+
+const isRuntimeDrifted = (
+    runtime: Pick<
+        SharedManagedCloudflareTunnelRuntimeSummary,
+        "status" | "referenceCount" | "observedHealth"
+    >,
+) => {
+    if (runtime.referenceCount === 0) {
+        return false;
+    }
+
+    return (
+        runtime.status !== "running" || runtime.observedHealth.status !== "healthy"
+    );
+};
+
+const repairRuntimeResource = async (
+    runtime: CloudflareTunnelRuntime,
+    summary: SharedManagedCloudflareTunnelRuntimeSummary,
+) => {
+    if (
+        summary.resourceType === "unknown" ||
+        summary.observedHealth.status === "missing"
+    ) {
+        await ensureRuntimeResource(runtime);
+        return "ensure" as const;
+    }
+
+    if (
+        summary.resourceType === "standalone" &&
+        ["created", "exited", "dead"].includes(summary.observedHealth.state)
+    ) {
+        await ensureRuntimeResource(runtime);
+        return "start" as const;
+    }
+
+    await removeRuntimeResource(runtime);
+    await ensureRuntimeResource(runtime);
+    return "recreate" as const;
+};
+
 const countSharedManagedReferences = async ({
     cloudflareIntegrationId,
     cloudflareTunnelId,
@@ -734,6 +822,210 @@ export const listSharedManagedCloudflareTunnelRuntimes = async (
 
         return (left.serverName || "").localeCompare(right.serverName || "");
     });
+};
+
+export const reconcileSharedManagedCloudflareTunnelRuntime = async (
+    cloudflareTunnelRuntimeId: string,
+) => {
+    const runtime = await findRuntimeById(cloudflareTunnelRuntimeId);
+
+    if (!runtime) {
+        throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Cloudflare shared runtime not found",
+        });
+    }
+
+    const resourceType = await getDockerResourceType(
+        runtime.dockerResourceName,
+        runtime.serverId || undefined,
+    );
+    const observedHealth = await getObservedRuntimeHealth(runtime, resourceType);
+    const nextState = mapObservedHealthToRuntimeState(observedHealth);
+    const didStatusChange =
+        runtime.status !== nextState.status ||
+        runtime.lastError !== nextState.lastError;
+
+    await updateRuntimeById(runtime.cloudflareTunnelRuntimeId, {
+        status: nextState.status,
+        lastError: nextState.lastError,
+        lastSeenAt: observedHealth.observedAt,
+        ...(nextState.status === "running" && runtime.status !== "running"
+            ? {
+                lastStartedAt: observedHealth.observedAt,
+            }
+            : {}),
+    });
+
+    return {
+        changed: didStatusChange,
+        summary: await buildRuntimeSummary(
+            await findRuntimeById(runtime.cloudflareTunnelRuntimeId),
+        ),
+    };
+};
+
+export const reconcileAllSharedManagedCloudflareTunnelRuntimes = async (
+    organizationId?: string,
+): Promise<SharedManagedCloudflareTunnelRuntimeReconcileResult> => {
+    const checkedAt = now();
+    const runtimes = await db.query.cloudflareTunnelRuntime.findMany({
+        ...(organizationId
+            ? {
+                where: eq(cloudflareTunnelRuntime.organizationId, organizationId),
+            }
+            : {}),
+        columns: {
+            cloudflareTunnelRuntimeId: true,
+        },
+    });
+
+    let changedCount = 0;
+    let failedCount = 0;
+
+    for (const runtime of runtimes) {
+        try {
+            const result = await reconcileSharedManagedCloudflareTunnelRuntime(
+                runtime.cloudflareTunnelRuntimeId,
+            );
+            if (result.changed) {
+                changedCount += 1;
+            }
+        } catch (error) {
+            failedCount += 1;
+            console.error(
+                `[Cloudflare Runtime Reconcile] Failed for ${runtime.cloudflareTunnelRuntimeId}`,
+                error,
+            );
+        }
+    }
+
+    return {
+        checkedAt,
+        reconciledCount: runtimes.length,
+        changedCount,
+        failedCount,
+    };
+};
+
+export const repairSharedManagedCloudflareTunnelRuntime = async ({
+    organizationId,
+    cloudflareTunnelRuntimeId,
+}: {
+    organizationId: string;
+    cloudflareTunnelRuntimeId: string;
+}) => {
+    const runtime = await findRuntimeById(cloudflareTunnelRuntimeId);
+
+    if (!runtime || runtime.organizationId !== organizationId) {
+        throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "Cloudflare shared runtime not found",
+        });
+    }
+
+    const summary = await buildRuntimeSummary(runtime);
+
+    if (summary.referenceCount === 0) {
+        throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+                "This shared runtime has no referenced domains. Clean it up instead of repairing it.",
+        });
+    }
+
+    if (!isRuntimeDrifted(summary)) {
+        return {
+            changed: false,
+            action: "noop" as const,
+            summary,
+        };
+    }
+
+    const action = await repairRuntimeResource(runtime, summary);
+    const reconciled = await reconcileSharedManagedCloudflareTunnelRuntime(
+        runtime.cloudflareTunnelRuntimeId,
+    );
+
+    return {
+        changed: true,
+        action,
+        summary: reconciled.summary,
+    };
+};
+
+export const repairDriftedSharedManagedCloudflareTunnelRuntimes = async (
+    organizationId: string,
+): Promise<SharedManagedCloudflareTunnelRuntimeRepairResult> => {
+    const checkedAt = now();
+    const runtimes = await listSharedManagedCloudflareTunnelRuntimes(organizationId);
+    const repairCandidates = runtimes.filter((runtime) => isRuntimeDrifted(runtime));
+
+    let repairedCount = 0;
+    let skippedCount = 0;
+    let failedCount = 0;
+
+    for (const runtime of repairCandidates) {
+        try {
+            const result = await repairSharedManagedCloudflareTunnelRuntime({
+                organizationId,
+                cloudflareTunnelRuntimeId: runtime.cloudflareTunnelRuntimeId,
+            });
+
+            if (result.changed) {
+                repairedCount += 1;
+            } else {
+                skippedCount += 1;
+            }
+        } catch (error) {
+            failedCount += 1;
+            console.error(
+                `[Cloudflare Runtime Repair] Failed for ${runtime.cloudflareTunnelRuntimeId}`,
+                error,
+            );
+        }
+    }
+
+    return {
+        checkedAt,
+        attemptedCount: repairCandidates.length,
+        repairedCount,
+        skippedCount,
+        failedCount,
+    };
+};
+
+export const initCloudflareTunnelRuntimeReconcileJob = async (
+    cronExpression = SHARED_RUNTIME_RECONCILE_CRON,
+) => {
+    const existingJob = scheduledJobs[SHARED_RUNTIME_RECONCILE_JOB_NAME];
+    if (existingJob) {
+        existingJob.cancel();
+    }
+
+    scheduleJob(
+        SHARED_RUNTIME_RECONCILE_JOB_NAME,
+        cronExpression,
+        async () => {
+            try {
+                const result =
+                    await reconcileAllSharedManagedCloudflareTunnelRuntimes();
+
+                if (result.reconciledCount > 0 || result.failedCount > 0) {
+                    console.log(
+                        `[Cloudflare Runtime Reconcile] Checked ${result.reconciledCount} runtimes, changed ${result.changedCount}, failed ${result.failedCount}`,
+                    );
+                }
+            } catch (error) {
+                console.error(
+                    "[Cloudflare Runtime Reconcile] Background reconcile failed",
+                    error,
+                );
+            }
+        },
+    );
+
+    return true;
 };
 
 export const restartSharedManagedCloudflareTunnelRuntime = async ({
