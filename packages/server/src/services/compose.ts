@@ -7,12 +7,16 @@ import {
 	cleanAppName,
 	compose,
 } from "@dokploy/server/db/schema";
-import { getBuildComposeCommand } from "@dokploy/server/utils/builders/compose";
+import {
+	getBuildComposeCommand,
+	getCreateEnvFileCommand,
+} from "@dokploy/server/utils/builders/compose";
 import { randomizeSpecificationFile } from "@dokploy/server/utils/docker/compose";
 import {
 	cloneCompose,
 	loadDockerCompose,
 	loadDockerComposeRemote,
+	writeDomainsToCompose,
 } from "@dokploy/server/utils/docker/domain";
 import type { ComposeSpecification } from "@dokploy/server/utils/docker/types";
 import { sendBuildErrorNotifications } from "@dokploy/server/utils/notifications/build-error";
@@ -216,9 +220,8 @@ export const deployCompose = async ({
 }) => {
 	const compose = await findComposeById(composeId);
 
-	const buildLink = `${await getDokployUrl()}/dashboard/project/${
-		compose.environment.projectId
-	}/environment/${compose.environmentId}/services/compose/${compose.composeId}?tab=deployments`;
+	const buildLink = `${await getDokployUrl()}/dashboard/project/${compose.environment.projectId
+		}/environment/${compose.environmentId}/services/compose/${compose.composeId}?tab=deployments`;
 	const deployment = await createDeploymentCompose({
 		composeId: composeId,
 		title: titleLog,
@@ -441,9 +444,8 @@ export const removeCompose = async (
 		} else {
 			const command = `
 			docker network disconnect ${compose.appName} dokploy-traefik;
-			env -i PATH="$PATH" docker compose -p ${compose.appName} down ${
-				deleteVolumes ? "--volumes" : ""
-			};
+			env -i PATH="$PATH" docker compose -p ${compose.appName} down ${deleteVolumes ? "--volumes" : ""
+				};
 			rm -rf ${projectPath}`;
 
 			if (compose.serverId) {
@@ -468,16 +470,23 @@ export const startCompose = async (composeId: string) => {
 		const path =
 			compose.sourceType === "raw" ? "docker-compose.yml" : compose.composePath;
 		const baseCommand = `env -i PATH="$PATH" docker compose -p ${compose.appName} -f ${path} up -d`;
+		const prepareComposeCommand = await writeDomainsToCompose(
+			compose,
+			compose.domains,
+		);
+		const prepareEnvCommand = await getCreateEnvFileCommand(compose);
+		const startCommand = `
+		set -e
+		${prepareComposeCommand}
+		${prepareEnvCommand}
+		cd "${projectPath}"
+		${baseCommand}
+		`;
 		if (compose.composeType === "docker-compose") {
 			if (compose.serverId) {
-				await execAsyncRemote(
-					compose.serverId,
-					`cd ${projectPath} && ${baseCommand}`,
-				);
+				await execAsyncRemote(compose.serverId, startCommand);
 			} else {
-				await execAsync(baseCommand, {
-					cwd: projectPath,
-				});
+				await execAsync(startCommand);
 			}
 		}
 
@@ -502,8 +511,7 @@ export const stopCompose = async (composeId: string) => {
 			if (compose.serverId) {
 				await execAsyncRemote(
 					compose.serverId,
-					`cd ${join(COMPOSE_PATH, compose.appName)} && env -i PATH="$PATH" docker compose -p ${
-						compose.appName
+					`cd ${join(COMPOSE_PATH, compose.appName)} && env -i PATH="$PATH" docker compose -p ${compose.appName
 					} stop`,
 				);
 			} else {

@@ -153,6 +153,21 @@ const mergeServiceNetworks = (
 	};
 };
 
+const prependUniqueLabels = (
+	currentLabels: string[],
+	labelsToPrepend: string[],
+) => {
+	const seen = new Set<string>();
+	return [...labelsToPrepend, ...currentLabels].filter((label) => {
+		if (seen.has(label)) {
+			return false;
+		}
+
+		seen.add(label);
+		return true;
+	});
+};
+
 const createCloudflareSidecarService = ({
 	composeType,
 	envVarName,
@@ -384,21 +399,22 @@ export const addDomainToCompose = async (
 		}
 
 		if (Array.isArray(labels)) {
-			if (!labels.includes("traefik.enable=true")) {
-				labels.unshift("traefik.enable=true");
-			}
-			labels.unshift(...httpLabels);
+			const labelsToPrepend = [...httpLabels, "traefik.enable=true"];
+
 			if (!compose.isolatedDeployment) {
-				if (compose.composeType === "docker-compose") {
-					if (!labels.includes("traefik.docker.network=dokploy-network")) {
-						labels.unshift("traefik.docker.network=dokploy-network");
-					}
-				} else {
-					// Stack Case
-					if (!labels.includes("traefik.swarm.network=dokploy-network")) {
-						labels.unshift("traefik.swarm.network=dokploy-network");
-					}
-				}
+				labelsToPrepend.unshift(
+					compose.composeType === "docker-compose"
+						? "traefik.docker.network=dokploy-network"
+						: "traefik.swarm.network=dokploy-network",
+				);
+			}
+
+			const mergedLabels = prependUniqueLabels(labels, labelsToPrepend);
+
+			if (compose.composeType === "docker-compose") {
+				result.services[serviceName].labels = mergedLabels;
+			} else if (result.services[serviceName].deploy) {
+				result.services[serviceName].deploy.labels = mergedLabels;
 			}
 		}
 
