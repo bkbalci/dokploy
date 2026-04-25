@@ -9,7 +9,9 @@ import {
 	findPreviewDeploymentById,
 	findServerById,
 	generateTraefikMeDomain,
+	getCloudflareTunnelUsageSummary,
 	getWebServerSettings,
+	inspectCloudflareDomainDrift,
 	listCloudflareIntegrationsByOrganizationId,
 	listCloudflareTunnels,
 	listSharedManagedCloudflareTunnelRuntimes,
@@ -17,6 +19,7 @@ import {
 	removeCloudflareDomainSync,
 	removeDomain,
 	removeDomainById,
+	repairCloudflareDomainDrift,
 	syncCloudflareDomain,
 	updateDomainById,
 	validateDomain,
@@ -197,6 +200,42 @@ export const domainRouter = createTRPCRouter({
 				defaultTunnelName: integration.defaultTunnelName,
 				tunnels,
 			};
+		}),
+	cloudflareTunnelUsage: protectedProcedure
+		.input(
+			z
+				.object({
+					applicationId: z.string().optional(),
+					composeId: z.string().optional(),
+					domainId: z.string().optional(),
+					cloudflareIntegrationId: z.string().min(1),
+					cloudflareTunnelId: z.string().min(1),
+				})
+				.refine((input) => !!input.applicationId || !!input.composeId, {
+					message: "Application or compose id is required",
+				}),
+		)
+		.query(async ({ input, ctx }) => {
+			if (input.applicationId) {
+				await checkServicePermissionAndAccess(ctx, input.applicationId, {
+					domain: ["read"],
+				});
+			}
+
+			if (input.composeId) {
+				await checkServicePermissionAndAccess(ctx, input.composeId, {
+					domain: ["read"],
+				});
+			}
+
+			return getCloudflareTunnelUsageSummary({
+				organizationId: ctx.session.activeOrganizationId,
+				applicationId: input.applicationId,
+				composeId: input.composeId,
+				cloudflareIntegrationId: input.cloudflareIntegrationId,
+				cloudflareTunnelId: input.cloudflareTunnelId,
+				excludeDomainId: input.domainId,
+			});
 		}),
 	createCloudflareTunnel: protectedProcedure
 		.input(
@@ -448,7 +487,6 @@ export const domainRouter = createTRPCRouter({
 			}
 
 			await removeCloudflareDomainSync(domain);
-
 			const result = await removeDomainById(input.domainId);
 			await audit(ctx, {
 				action: "delete",
@@ -461,6 +499,57 @@ export const domainRouter = createTRPCRouter({
 				const application = await findApplicationById(domain.applicationId);
 				await removeDomain(application, domain.uniqueConfigKey);
 			}
+
+			return result;
+		}),
+	detectCloudflareDrift: protectedProcedure
+		.input(apiFindDomain)
+		.mutation(async ({ input, ctx }) => {
+			const domain = await findDomainById(input.domainId);
+			const serviceId = domain.applicationId || domain.composeId;
+
+			if (serviceId) {
+				await checkServicePermissionAndAccess(ctx, serviceId, {
+					domain: ["read"],
+				});
+			} else if (domain.previewDeploymentId) {
+				const preview = await findPreviewDeploymentById(
+					domain.previewDeploymentId,
+				);
+				await checkServicePermissionAndAccess(ctx, preview.applicationId, {
+					domain: ["read"],
+				});
+			}
+
+			return inspectCloudflareDomainDrift(input.domainId);
+		}),
+	repairCloudflareDrift: protectedProcedure
+		.input(apiFindDomain)
+		.mutation(async ({ input, ctx }) => {
+			const domain = await findDomainById(input.domainId);
+			const serviceId = domain.applicationId || domain.composeId;
+
+			if (serviceId) {
+				await checkServicePermissionAndAccess(ctx, serviceId, {
+					domain: ["create"],
+				});
+			} else if (domain.previewDeploymentId) {
+				const preview = await findPreviewDeploymentById(
+					domain.previewDeploymentId,
+				);
+				await checkServicePermissionAndAccess(ctx, preview.applicationId, {
+					domain: ["create"],
+				});
+			}
+
+			const result = await repairCloudflareDomainDrift(input.domainId);
+
+			await audit(ctx, {
+				action: "update",
+				resourceType: "domain",
+				resourceId: domain.domainId,
+				resourceName: domain.host,
+			});
 
 			return result;
 		}),

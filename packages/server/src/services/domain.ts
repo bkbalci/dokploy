@@ -8,16 +8,18 @@ import {
 	removeDomain as removeTraefikDomain,
 } from "@dokploy/server/utils/traefik/domain";
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import type { z } from "zod";
 import { type apiCreateDomain, domains } from "../db/schema";
 import { findApplicationById } from "./application";
 import { detectCDNProvider } from "./cdn";
 import {
+	findCloudflareDnsRecord,
 	findCloudflareIntegrationById,
 	findCloudflareTunnelById,
 	findCloudflareZoneForHostname,
+	getCloudflareTunnelConfiguration,
 	removeCloudflareDnsRecord,
 	removeCloudflareTunnelIngress,
 	upsertCloudflareDnsRecord,
@@ -31,6 +33,39 @@ import { findComposeById } from "./compose";
 import { findServerById } from "./server";
 
 export type Domain = typeof domains.$inferSelect;
+export type CloudflareTunnelUsageSummary = {
+	totalDomains: number;
+	sameServerDomains: number;
+	sameServerName: string | null;
+	modeCounts: {
+		existingInstance: number;
+		sidecar: number;
+		sharedManaged: number;
+	};
+	sameServerModeCounts: {
+		existingInstance: number;
+		sidecar: number;
+		sharedManaged: number;
+	};
+	references: Array<{
+		domainId: string;
+		host: string;
+		cloudflareTunnelMode: Domain["cloudflareTunnelMode"];
+		sameServer: boolean;
+	}>;
+};
+export type CloudflareDomainDriftInspection = {
+	checkedAt: string;
+	status: "healthy" | "drifted" | "error";
+	issues: string[];
+	expectedService: string | null;
+	observedService: string | null;
+	expectedDnsTarget: string | null;
+	observedDnsTarget: string | null;
+	tunnelExists: boolean;
+	routeExists: boolean;
+	dnsExists: boolean;
+};
 
 const clearCloudflareFields = (): Partial<Domain> => ({
 	publishToCloudflare: false,
@@ -49,6 +84,21 @@ const normalizeDomainPath = (path?: string | null) => {
 	}
 
 	return path;
+};
+
+const matchesCloudflareIngressRule = (
+	rule: {
+		hostname?: string;
+		path?: string;
+		service?: string;
+	},
+	hostname: string,
+	path?: string | null,
+) => {
+	return (
+		(rule.hostname || "").toLowerCase() === hostname.toLowerCase() &&
+		normalizeDomainPath(rule.path || null) === normalizeDomainPath(path)
+	);
 };
 
 const hasCloudflareBindingChanged = (
@@ -453,6 +503,315 @@ export const findDomainsByComposeId = async (composeId: string) => {
 	});
 
 	return domainsArray;
+};
+
+export const getCloudflareTunnelUsageSummary = async ({
+	organizationId,
+	cloudflareIntegrationId,
+	cloudflareTunnelId,
+	applicationId,
+	composeId,
+	excludeDomainId,
+}: {
+	organizationId: string;
+	cloudflareIntegrationId: string;
+	cloudflareTunnelId: string;
+	applicationId?: string;
+	composeId?: string;
+	excludeDomainId?: string;
+}): Promise<CloudflareTunnelUsageSummary> => {
+	const integration = await findCloudflareIntegrationById(cloudflareIntegrationId);
+
+	if (integration.organizationId !== organizationId) {
+		throw new TRPCError({
+			code: "UNAUTHORIZED",
+			message: "You are not allowed to inspect this Cloudflare integration",
+		});
+	}
+
+	let currentServerId: string | null = null;
+	if (applicationId) {
+		const application = await findApplicationById(applicationId);
+		currentServerId = application.serverId ?? null;
+	} else if (composeId) {
+		const compose = await findComposeById(composeId);
+		currentServerId = compose.serverId ?? null;
+	}
+
+	const currentServer = currentServerId
+		? await findServerById(currentServerId).catch(() => null)
+		: null;
+
+	const results = await db.query.domains.findMany({
+		where: and(
+			eq(domains.publishToCloudflare, true),
+			eq(domains.cloudflareIntegrationId, cloudflareIntegrationId),
+			eq(domains.cloudflareTunnelId, cloudflareTunnelId),
+			...(excludeDomainId ? [ne(domains.domainId, excludeDomainId)] : []),
+		),
+		columns: {
+			domainId: true,
+			host: true,
+			cloudflareTunnelMode: true,
+		},
+		with: {
+			application: {
+				columns: {
+					serverId: true,
+				},
+			},
+			compose: {
+				columns: {
+					serverId: true,
+				},
+			},
+		},
+	});
+
+	const modeCounts = {
+		existingInstance: 0,
+		sidecar: 0,
+		sharedManaged: 0,
+	};
+	const sameServerModeCounts = {
+		existingInstance: 0,
+		sidecar: 0,
+		sharedManaged: 0,
+	};
+
+	const references = results.map((result) => {
+		const serverId = result.application?.serverId ?? result.compose?.serverId ?? null;
+		const sameServer = serverId === currentServerId;
+
+		if (result.cloudflareTunnelMode === "sidecar") {
+			modeCounts.sidecar += 1;
+			if (sameServer) {
+				sameServerModeCounts.sidecar += 1;
+			}
+		} else if (result.cloudflareTunnelMode === "shared-managed") {
+			modeCounts.sharedManaged += 1;
+			if (sameServer) {
+				sameServerModeCounts.sharedManaged += 1;
+			}
+		} else {
+			modeCounts.existingInstance += 1;
+			if (sameServer) {
+				sameServerModeCounts.existingInstance += 1;
+			}
+		}
+
+		return {
+			domainId: result.domainId,
+			host: result.host,
+			cloudflareTunnelMode: result.cloudflareTunnelMode,
+			sameServer,
+		};
+	});
+
+	return {
+		totalDomains: results.length,
+		sameServerDomains: references.filter((reference) => reference.sameServer).length,
+		sameServerName: currentServer?.name || null,
+		modeCounts,
+		sameServerModeCounts,
+		references,
+	};
+};
+
+export const inspectCloudflareDomainDrift = async (
+	domainId: string,
+): Promise<CloudflareDomainDriftInspection> => {
+	const checkedAt = new Date().toISOString();
+	const domain = await findDomainById(domainId);
+	const issues: string[] = [];
+	let expectedService: string | null = null;
+	let observedService: string | null = null;
+	let expectedDnsTarget: string | null = null;
+	let observedDnsTarget: string | null = null;
+	let tunnelExists = false;
+	let routeExists = false;
+	let dnsExists = false;
+	let hardError = false;
+
+	if (!domain.publishToCloudflare || !domain.cloudflareIntegrationId) {
+		return {
+			checkedAt,
+			status: "error",
+			issues: ["This domain is not currently managed through Cloudflare Tunnel."],
+			expectedService,
+			observedService,
+			expectedDnsTarget,
+			observedDnsTarget,
+			tunnelExists,
+			routeExists,
+			dnsExists,
+		};
+	}
+
+	const integration = await findCloudflareIntegrationById(
+		domain.cloudflareIntegrationId,
+	).catch((error) => {
+		hardError = true;
+		issues.push(
+			error instanceof Error
+				? error.message
+				: "Cloudflare integration could not be loaded.",
+		);
+		return null;
+	});
+
+	if (!integration) {
+		return {
+			checkedAt,
+			status: "error",
+			issues,
+			expectedService,
+			observedService,
+			expectedDnsTarget,
+			observedDnsTarget,
+			tunnelExists,
+			routeExists,
+			dnsExists,
+		};
+	}
+
+	const tunnelId = domain.cloudflareTunnelId || integration.defaultTunnelId;
+	if (!tunnelId) {
+		issues.push("Cloudflare tunnel selection is missing.");
+	} else {
+		expectedDnsTarget = `${tunnelId}.cfargotunnel.com`;
+	}
+
+	try {
+		expectedService = (await getCloudflareOriginService(domain)).service;
+	} catch (error) {
+		issues.push(
+			error instanceof Error
+				? error.message
+				: "Expected origin service could not be resolved.",
+		);
+	}
+
+	if (tunnelId) {
+		await findCloudflareTunnelById({
+			apiToken: integration.apiToken,
+			accountId: integration.accountId,
+			tunnelId,
+		})
+			.then(() => {
+				tunnelExists = true;
+			})
+			.catch((error) => {
+				issues.push(
+					error instanceof Error
+						? error.message
+						: "Cloudflare tunnel could not be found.",
+				);
+			});
+	}
+
+	if (tunnelId && tunnelExists) {
+		await getCloudflareTunnelConfiguration({
+			apiToken: integration.apiToken,
+			accountId: integration.accountId,
+			tunnelId,
+		})
+			.then((configuration) => {
+				const rule = (configuration.config?.ingress || []).find((ingressRule) =>
+					matchesCloudflareIngressRule(ingressRule, domain.host, domain.path),
+				);
+
+				if (!rule) {
+					issues.push("Cloudflare tunnel ingress rule is missing.");
+					return;
+				}
+
+				routeExists = true;
+				observedService = rule.service || null;
+
+				if (expectedService && observedService !== expectedService) {
+					issues.push(
+						`Cloudflare tunnel ingress points to '${observedService}' instead of '${expectedService}'.`,
+					);
+				}
+			})
+			.catch((error) => {
+				hardError = true;
+				issues.push(
+					error instanceof Error
+						? error.message
+						: "Cloudflare tunnel configuration could not be read.",
+				);
+			});
+	}
+
+	if (!domain.cloudflareZoneId) {
+		issues.push("Cloudflare zone metadata is missing.");
+	} else {
+		await findCloudflareDnsRecord(
+			integration.apiToken,
+			domain.cloudflareZoneId,
+			domain.host,
+		)
+			.then((record) => {
+				if (!record) {
+					issues.push("Cloudflare DNS record is missing.");
+					return;
+				}
+
+				dnsExists = true;
+				observedDnsTarget = record.content;
+
+				if (expectedDnsTarget && record.content !== expectedDnsTarget) {
+					issues.push(
+						`Cloudflare DNS points to '${record.content}' instead of '${expectedDnsTarget}'.`,
+					);
+				}
+
+				if (!record.proxied) {
+					issues.push("Cloudflare DNS record is not proxied.");
+				}
+			})
+			.catch((error) => {
+				hardError = true;
+				issues.push(
+					error instanceof Error
+						? error.message
+						: "Cloudflare DNS record could not be read.",
+				);
+			});
+	}
+
+	return {
+		checkedAt,
+		status: hardError ? "error" : issues.length > 0 ? "drifted" : "healthy",
+		issues,
+		expectedService,
+		observedService,
+		expectedDnsTarget,
+		observedDnsTarget,
+		tunnelExists,
+		routeExists,
+		dnsExists,
+	};
+};
+
+export const repairCloudflareDomainDrift = async (
+	domainId: string,
+): Promise<CloudflareDomainDriftInspection> => {
+	const domain = await findDomainById(domainId);
+
+	if (!domain.publishToCloudflare) {
+		throw new TRPCError({
+			code: "BAD_REQUEST",
+			message: "This domain is not managed through Cloudflare Tunnel.",
+		});
+	}
+
+	const cloudflareMetadata = await syncCloudflareDomain(domain, domain);
+	await updateDomainById(domainId, cloudflareMetadata);
+
+	return inspectCloudflareDomainDrift(domainId);
 };
 
 export const updateDomainById = async (

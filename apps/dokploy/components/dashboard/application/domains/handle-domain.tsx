@@ -1,7 +1,7 @@
 import { standardSchemaResolver as zodResolver } from "@hookform/resolvers/standard-schema";
 import { Cloud, DatabaseZap, Dices, Loader2, RefreshCw, X } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useForm } from "react-hook-form";
 import { toast } from "sonner";
 import z from "zod";
@@ -358,6 +358,30 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 	);
 	const isUsingDedicatedSidecarTunnel =
 		cloudflareTunnelMode === "sidecar" && sidecarTunnelSource === "dedicated";
+	const previousCloudflareTunnelMode = useRef(cloudflareTunnelMode);
+	const cloudflareTunnelUsageQueryInput =
+		type === "application"
+			? {
+					applicationId: id,
+					domainId: domainId || undefined,
+					cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
+					cloudflareTunnelId: selectedCloudflareTunnelId || "",
+				}
+			: {
+					composeId: id,
+					domainId: domainId || undefined,
+					cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
+					cloudflareTunnelId: selectedCloudflareTunnelId || "",
+				};
+	const { data: cloudflareTunnelUsage } =
+		api.domain.cloudflareTunnelUsage.useQuery(cloudflareTunnelUsageQueryInput, {
+			enabled:
+				isOpen &&
+				publishToCloudflare &&
+				!!selectedCloudflareIntegrationId &&
+				!!selectedCloudflareTunnelId,
+			refetchOnWindowFocus: false,
+		});
 
 	useEffect(() => {
 		if (data) {
@@ -416,6 +440,19 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 		if (cloudflareTunnelMode !== "sidecar") {
 			setSidecarTunnelSource("existing");
 		}
+	}, [cloudflareTunnelMode]);
+
+	useEffect(() => {
+		const previousMode = previousCloudflareTunnelMode.current;
+
+		if (
+			cloudflareTunnelMode === "sidecar" &&
+			previousMode !== "sidecar"
+		) {
+			setSidecarTunnelSource("dedicated");
+		}
+
+		previousCloudflareTunnelMode.current = cloudflareTunnelMode;
 	}, [cloudflareTunnelMode]);
 
 	useEffect(() => {
@@ -660,6 +697,39 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 			);
 		}
 	};
+
+	const dedicatedSidecarTunnelLocked =
+		isUsingDedicatedSidecarTunnel && !!selectedCloudflareTunnel?.isDokployManaged;
+	const tunnelLooksProductionLike = !!selectedCloudflareTunnel?.name.match(
+		/(^|[-_\s])(prod|production|live)([-_\s]|$)/i,
+	);
+	const hasSidecarExistingMixRisk = !!cloudflareTunnelUsage &&
+		((cloudflareTunnelMode === "sidecar" &&
+			cloudflareTunnelUsage.modeCounts.existingInstance > 0) ||
+			(cloudflareTunnelMode === "existing-instance" &&
+				cloudflareTunnelUsage.modeCounts.sidecar > 0));
+	const deployRequirement = !publishToCloudflare
+		? null
+		: type === "compose"
+			? cloudflareTunnelMode === "sidecar"
+				? {
+					type: "warning" as const,
+					title: "Compose redeploy required",
+					message:
+						"Dokploy will inject a cloudflared sidecar and rewrite compose domain labels for this service after you save.",
+				}
+				: {
+					type: "warning" as const,
+					title: "Compose redeploy required",
+					message:
+						"Dokploy will update the compose domain configuration on the next deploy. Shared and existing connectors run outside this compose, but the service labels still need redeploy.",
+				}
+			: {
+				type: "info" as const,
+				title: "Application redeploy not required",
+				message:
+					"Dokploy can update Cloudflare and Traefik for application domains without rebuilding the application deployment.",
+			};
 	return (
 		<Dialog open={isOpen} onOpenChange={setIsOpen}>
 			<DialogTrigger className="" asChild>
@@ -1055,36 +1125,52 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 																)
 															}
 														>
-															<label className="flex items-start gap-3 rounded-md border p-3 cursor-pointer">
+															<div
+																className={`flex items-start gap-3 rounded-md border p-3 cursor-pointer transition-colors ${
+																	sidecarTunnelSource === "existing"
+																		? "border-amber-500/40 bg-amber-500/5"
+																		: "border-border bg-background"
+																}`}
+																onClick={() => setSidecarTunnelSource("existing")}
+															>
 																<RadioGroupItem
 																	value="existing"
 																	className="mt-1"
 																/>
 																<div className="grid gap-1">
-																	<div className="text-sm font-medium">
+																	<div className="flex items-center gap-2 text-sm font-medium">
 																		Use Existing Tunnel
+																		<Badge variant="outline">Shared risk</Badge>
 																	</div>
 																	<div className="text-sm text-muted-foreground">
 																		Run a sidecar connector for a tunnel that
 																		already exists in Cloudflare.
 																	</div>
 																</div>
-															</label>
-															<label className="flex items-start gap-3 rounded-md border p-3 cursor-pointer">
+															</div>
+															<div
+																className={`flex items-start gap-3 rounded-md border p-3 cursor-pointer transition-colors ${
+																	sidecarTunnelSource === "dedicated"
+																		? "border-emerald-500/40 bg-emerald-500/5"
+																		: "border-border bg-background"
+																}`}
+																onClick={() => setSidecarTunnelSource("dedicated")}
+															>
 																<RadioGroupItem
 																	value="dedicated"
 																	className="mt-1"
 																/>
 																<div className="grid gap-1">
-																	<div className="text-sm font-medium">
+																	<div className="flex items-center gap-2 text-sm font-medium">
 																		Create Dedicated Tunnel
+																		<Badge variant="outline">Recommended</Badge>
 																	</div>
 																	<div className="text-sm text-muted-foreground">
 																		Create and use a Dokploy-managed tunnel only
 																		for this sidecar flow.
 																	</div>
 																</div>
-															</label>
+															</div>
 														</RadioGroup>
 													</FormItem>
 												) : null}
@@ -1135,7 +1221,7 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 												) : null}
 
 												{isUsingDedicatedSidecarTunnel ? (
-													<div className="grid gap-2 rounded-md border border-dashed p-3">
+													<div className="grid gap-3 rounded-md border border-emerald-500/30 bg-emerald-500/5 p-3">
 														<div className="text-sm font-medium">
 															Create Dedicated Tunnel
 														</div>
@@ -1143,6 +1229,14 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 															Create a Dokploy-managed sidecar tunnel just for
 															this test or deployment.
 														</FormDescription>
+														{dedicatedSidecarTunnelLocked ? (
+															<AlertBlock type="info">
+																This sidecar flow is currently locked to the
+																Dokploy-managed tunnel '{selectedCloudflareTunnel?.name}'.
+																Switch back to Existing Tunnel if you want to use a
+																different tunnel.
+															</AlertBlock>
+														) : null}
 														<div className="flex gap-2">
 															<Input
 																value={newCloudflareTunnelName}
@@ -1151,15 +1245,19 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 																}
 																placeholder="dokploy-sidecar-my-app"
 																maxLength={63}
+																disabled={dedicatedSidecarTunnelLocked}
 															/>
 															<Button
 																type="button"
 																variant="secondary"
 																onClick={handleCreateCloudflareTunnel}
 																isLoading={isCreatingCloudflareTunnel}
-																disabled={!selectedCloudflareIntegrationId}
+																disabled={
+																	!selectedCloudflareIntegrationId ||
+																	dedicatedSidecarTunnelLocked
+																}
 															>
-																Create Tunnel
+																{dedicatedSidecarTunnelLocked ? "Locked" : "Create Tunnel"}
 															</Button>
 														</div>
 													</div>
@@ -1189,6 +1287,75 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 																	? "No Cloudflare tunnels were found for the selected integration/account. Create or select a tunnel first, then Dokploy can manage a shared connector for it."
 																	: "No Cloudflare tunnels were found for the selected integration/account."}
 												</AlertBlock>
+
+														{selectedCloudflareTunnel ? (
+															<div className="grid gap-3 rounded-md border bg-muted/20 p-3 md:grid-cols-2">
+																<div className="grid gap-2">
+																	<div className="text-sm font-medium">Selected Tunnel</div>
+																	<div className="flex flex-wrap gap-2">
+																		<Badge variant="outline">
+																			{selectedCloudflareTunnel.isDokployManaged
+																				? "Dokploy-managed"
+																				: "User-managed"}
+																		</Badge>
+																		{cloudflareTunnelUsage ? (
+																			<Badge variant="outline">
+																				Used by {cloudflareTunnelUsage.totalDomains} domain
+																				{cloudflareTunnelUsage.totalDomains === 1 ? "" : "s"}
+																			</Badge>
+																		) : null}
+																	</div>
+																	<div className="text-sm text-muted-foreground">
+																		{selectedCloudflareTunnel.isDokployManaged
+																			? "This tunnel was created by Dokploy and is safer to reserve for dedicated sidecar flows."
+																			: "This tunnel is user-managed. Dokploy will only write routes into it; lifecycle stays outside Dokploy."}
+																	</div>
+																</div>
+																{cloudflareTunnelUsage ? (
+																	<div className="grid gap-2 text-sm text-muted-foreground">
+																		<div>
+																			Existing instance: {cloudflareTunnelUsage.modeCounts.existingInstance}
+																		</div>
+																		<div>Sidecar: {cloudflareTunnelUsage.modeCounts.sidecar}</div>
+																		<div>
+																			Shared managed: {cloudflareTunnelUsage.modeCounts.sharedManaged}
+																		</div>
+																	</div>
+																) : null}
+															</div>
+														) : null}
+
+														{deployRequirement ? (
+															<AlertBlock type={deployRequirement.type}>
+																<strong>{deployRequirement.title}:</strong> {deployRequirement.message}
+															</AlertBlock>
+														) : null}
+
+														{tunnelLooksProductionLike ? (
+															<AlertBlock type="warning">
+																Tunnel name looks production-oriented. Double-check before writing
+																routes into '{selectedCloudflareTunnel?.name}'.
+															</AlertBlock>
+														) : null}
+
+														{hasSidecarExistingMixRisk ? (
+															<AlertBlock type="warning">
+																This tunnel is already used by both sidecar and existing-instance
+																flows. That mix is riskier because connector ownership becomes less
+																obvious during incidents.
+															</AlertBlock>
+														) : null}
+
+														{cloudflareTunnelMode === "shared-managed" && cloudflareTunnelUsage ? (
+															<AlertBlock type="info">
+																Dokploy will scope the shared connector to
+																 {cloudflareTunnelUsage.sameServerName || "the selected server"}.
+																 This tunnel already has {cloudflareTunnelUsage.sameServerDomains}
+																 domain reference
+																{cloudflareTunnelUsage.sameServerDomains === 1 ? "" : "s"} on that
+																 server.
+															</AlertBlock>
+														) : null}
 											</>
 										) : null}
 									</div>

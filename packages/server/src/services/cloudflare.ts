@@ -279,7 +279,7 @@ export const findCloudflareTunnelById = async ({
     return tunnel;
 };
 
-const findCloudflareDnsRecord = async (
+export const findCloudflareDnsRecord = async (
     apiToken: string,
     zoneId: string,
     hostname: string,

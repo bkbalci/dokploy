@@ -59,6 +59,7 @@ import { api } from "@/utils/api";
 import { createColumns } from "./columns";
 import { DnsHelperModal } from "./dns-helper-modal";
 import {
+	type DomainCloudflareDriftStates,
 	DomainHealthPanel,
 	type DomainValidationStates,
 } from "./domain-health";
@@ -93,6 +94,10 @@ export const ShowDomains = ({ id, type }: Props) => {
 				);
 	const [validationStates, setValidationStates] =
 		useState<DomainValidationStates>({});
+	const [cloudflareDriftStates, setCloudflareDriftStates] =
+		useState<DomainCloudflareDriftStates>({});
+	const [cloudflareDriftLoadingStates, setCloudflareDriftLoadingStates] =
+		useState<Record<string, { detect: boolean; repair: boolean }>>({});
 	const [viewMode, setViewMode] = useState<"grid" | "table">(() => {
 		if (typeof window !== "undefined") {
 			return (
@@ -134,10 +139,18 @@ export const ShowDomains = ({ id, type }: Props) => {
 		api.domain.validateDomain.useMutation();
 	const { mutateAsync: deleteDomain, isPending: isRemoving } =
 		api.domain.delete.useMutation();
-	const { mutateAsync: reconcileSharedRuntime, isPending: isReconcilingSharedRuntime } =
-		api.cloudflare.reconcileSharedRuntime.useMutation();
-	const { mutateAsync: repairSharedRuntime, isPending: isRepairingSharedRuntime } =
-		api.cloudflare.repairSharedRuntime.useMutation();
+	const {
+		mutateAsync: reconcileSharedRuntime,
+		isPending: isReconcilingSharedRuntime,
+	} = api.cloudflare.reconcileSharedRuntime.useMutation();
+	const {
+		mutateAsync: repairSharedRuntime,
+		isPending: isRepairingSharedRuntime,
+	} = api.cloudflare.repairSharedRuntime.useMutation();
+	const { mutateAsync: detectCloudflareDrift } =
+		api.domain.detectCloudflareDrift.useMutation();
+	const { mutateAsync: repairCloudflareDrift } =
+		api.domain.repairCloudflareDrift.useMutation();
 	const canManageSharedRuntime = permissions?.organization.update ?? false;
 
 	const handleDeleteDomain = async (domainId: string) => {
@@ -191,7 +204,9 @@ export const ShowDomains = ({ id, type }: Props) => {
 		domain: NonNullable<typeof data>[number],
 	) => {
 		const runtime =
-			"cloudflareSharedRuntime" in domain ? domain.cloudflareSharedRuntime : null;
+			"cloudflareSharedRuntime" in domain
+				? domain.cloudflareSharedRuntime
+				: null;
 
 		if (!runtime) {
 			toast.error("Shared runtime record is missing for this domain");
@@ -206,8 +221,7 @@ export const ShowDomains = ({ id, type }: Props) => {
 			toast.success("Shared runtime reconciled");
 		} catch (error) {
 			toast.error("Failed to reconcile shared runtime", {
-				description:
-					error instanceof Error ? error.message : "Unknown error",
+				description: error instanceof Error ? error.message : "Unknown error",
 			});
 		}
 	};
@@ -216,7 +230,9 @@ export const ShowDomains = ({ id, type }: Props) => {
 		domain: NonNullable<typeof data>[number],
 	) => {
 		const runtime =
-			"cloudflareSharedRuntime" in domain ? domain.cloudflareSharedRuntime : null;
+			"cloudflareSharedRuntime" in domain
+				? domain.cloudflareSharedRuntime
+				: null;
 
 		if (!runtime) {
 			toast.error("Shared runtime record is missing for this domain");
@@ -235,9 +251,105 @@ export const ShowDomains = ({ id, type }: Props) => {
 			);
 		} catch (error) {
 			toast.error("Failed to repair shared runtime", {
-				description:
-					error instanceof Error ? error.message : "Unknown error",
+				description: error instanceof Error ? error.message : "Unknown error",
 			});
+		}
+	};
+
+	const handleDetectCloudflareDrift = async (
+		domain: NonNullable<typeof data>[number],
+	) => {
+		setCloudflareDriftLoadingStates((prev) => ({
+			...prev,
+			[domain.domainId]: {
+				detect: true,
+				repair: prev[domain.domainId]?.repair ?? false,
+			},
+		}));
+
+		try {
+			const result = await detectCloudflareDrift({
+				domainId: domain.domainId,
+			});
+			setCloudflareDriftStates((prev) => ({
+				...prev,
+				[domain.domainId]: {
+					isLoading: false,
+					...result,
+				},
+			}));
+			toast.success(
+				result.status === "healthy"
+					? "Cloudflare drift not detected"
+					: "Cloudflare drift detected",
+			);
+		} catch (error) {
+			setCloudflareDriftStates((prev) => ({
+				...prev,
+				[domain.domainId]: {
+					isLoading: false,
+					status: "error",
+					issues: [
+						error instanceof Error
+							? error.message
+							: "Failed to inspect Cloudflare drift",
+					],
+				},
+			}));
+			toast.error("Failed to inspect Cloudflare drift", {
+				description: error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setCloudflareDriftLoadingStates((prev) => ({
+				...prev,
+				[domain.domainId]: {
+					detect: false,
+					repair: prev[domain.domainId]?.repair ?? false,
+				},
+			}));
+		}
+	};
+
+	const handleRepairCloudflareDrift = async (
+		domain: NonNullable<typeof data>[number],
+	) => {
+		setCloudflareDriftLoadingStates((prev) => ({
+			...prev,
+			[domain.domainId]: {
+				detect: prev[domain.domainId]?.detect ?? false,
+				repair: true,
+			},
+		}));
+
+		try {
+			const result = await repairCloudflareDrift({
+				domainId: domain.domainId,
+			});
+			await refetch();
+			setCloudflareDriftStates((prev) => ({
+				...prev,
+				[domain.domainId]: {
+					isLoading: false,
+					...result,
+				},
+			}));
+			toast.success(
+				result.status === "healthy"
+					? "Cloudflare drift repaired"
+					: "Cloudflare drift repair completed with remaining issues",
+			);
+		} catch (error) {
+			toast.error("Failed to repair Cloudflare drift", {
+				description: error instanceof Error ? error.message : "Unknown error",
+			});
+		} finally {
+			setCloudflareDriftLoadingStates((prev) => ({
+				...prev,
+				[domain.domainId]: {
+					detect: prev[domain.domainId]?.detect ?? false,
+					repair: false,
+				},
+			}));
 		}
 	};
 
@@ -632,10 +744,27 @@ export const ShowDomains = ({ id, type }: Props) => {
 													validationState={validationState}
 													onValidateDomain={handleValidateDomain}
 													canManageSharedRuntime={canManageSharedRuntime}
-													isReconcilingSharedRuntime={isReconcilingSharedRuntime}
+													isReconcilingSharedRuntime={
+														isReconcilingSharedRuntime
+													}
 													isRepairingSharedRuntime={isRepairingSharedRuntime}
-													onReconcileSharedRuntime={handleReconcileSharedRuntime}
+													onReconcileSharedRuntime={
+														handleReconcileSharedRuntime
+													}
 													onRepairSharedRuntime={handleRepairSharedRuntime}
+													cloudflareDriftState={
+														cloudflareDriftStates[item.domainId]
+													}
+													isDetectingCloudflareDrift={
+														cloudflareDriftLoadingStates[item.domainId]
+															?.detect ?? false
+													}
+													isRepairingCloudflareDrift={
+														cloudflareDriftLoadingStates[item.domainId]
+															?.repair ?? false
+													}
+													onDetectCloudflareDrift={handleDetectCloudflareDrift}
+													onRepairCloudflareDrift={handleRepairCloudflareDrift}
 												/>
 											</div>
 										</CardContent>

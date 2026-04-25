@@ -28,6 +28,21 @@ export type DomainValidationState = {
 };
 
 export type DomainValidationStates = Record<string, DomainValidationState>;
+export type DomainCloudflareDriftState = {
+	isLoading: boolean;
+	checkedAt?: string;
+	status?: "healthy" | "drifted" | "error";
+	issues?: string[];
+	expectedService?: string | null;
+	observedService?: string | null;
+	expectedDnsTarget?: string | null;
+	observedDnsTarget?: string | null;
+	tunnelExists?: boolean;
+	routeExists?: boolean;
+	dnsExists?: boolean;
+};
+
+export type DomainCloudflareDriftStates = Record<string, DomainCloudflareDriftState>;
 
 type DomainHealthSummary = {
 	status: "healthy" | "warning" | "direct";
@@ -285,6 +300,11 @@ export const DomainHealthPanel = ({
 	isRepairingSharedRuntime,
 	onReconcileSharedRuntime,
 	onRepairSharedRuntime,
+	cloudflareDriftState,
+	isDetectingCloudflareDrift,
+	isRepairingCloudflareDrift,
+	onDetectCloudflareDrift,
+	onRepairCloudflareDrift,
 }: {
 	domain: DomainRecord;
 	validationState?: DomainValidationState;
@@ -294,6 +314,11 @@ export const DomainHealthPanel = ({
 	isRepairingSharedRuntime?: boolean;
 	onReconcileSharedRuntime?: (domain: DomainRecord) => void;
 	onRepairSharedRuntime?: (domain: DomainRecord) => void;
+	cloudflareDriftState?: DomainCloudflareDriftState;
+	isDetectingCloudflareDrift?: boolean;
+	isRepairingCloudflareDrift?: boolean;
+	onDetectCloudflareDrift?: (domain: DomainRecord) => void;
+	onRepairCloudflareDrift?: (domain: DomainRecord) => void;
 }) => {
 	const summary = getDomainHealthSummary(domain);
 	const sharedRuntime = getSharedRuntime(domain);
@@ -308,27 +333,54 @@ export const DomainHealthPanel = ({
 				{renderValidationBadge(domain, validationState, onValidateDomain)}
 			</div>
 
-			{canManageSharedRuntime && sharedRuntime ? (
+			{(domain.publishToCloudflare || (canManageSharedRuntime && sharedRuntime)) ? (
 				<div className="flex flex-wrap gap-2">
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={() => onReconcileSharedRuntime?.(domain)}
-						isLoading={isReconcilingSharedRuntime}
-					>
-						<RefreshCw className="mr-1 size-3.5" />
-						Reconcile Runtime
-					</Button>
-					<Button
-						variant="outline"
-						size="sm"
-						onClick={() => onRepairSharedRuntime?.(domain)}
-						isLoading={isRepairingSharedRuntime}
-						disabled={!summary.sharedRuntimeNeedsRepair}
-					>
-						<Activity className="mr-1 size-3.5" />
-						Repair Runtime
-					</Button>
+					{domain.publishToCloudflare ? (
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => onDetectCloudflareDrift?.(domain)}
+							isLoading={isDetectingCloudflareDrift}
+						>
+							<RefreshCw className="mr-1 size-3.5" />
+							Detect Drift
+						</Button>
+					) : null}
+					{domain.publishToCloudflare ? (
+						<Button
+							variant="outline"
+							size="sm"
+							onClick={() => onRepairCloudflareDrift?.(domain)}
+							isLoading={isRepairingCloudflareDrift}
+							disabled={cloudflareDriftState?.status !== "drifted"}
+						>
+							<Activity className="mr-1 size-3.5" />
+							Repair Drift
+						</Button>
+					) : null}
+					{canManageSharedRuntime && sharedRuntime ? (
+						<>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => onReconcileSharedRuntime?.(domain)}
+								isLoading={isReconcilingSharedRuntime}
+							>
+								<RefreshCw className="mr-1 size-3.5" />
+								Reconcile Runtime
+							</Button>
+							<Button
+								variant="outline"
+								size="sm"
+								onClick={() => onRepairSharedRuntime?.(domain)}
+								isLoading={isRepairingSharedRuntime}
+								disabled={!summary.sharedRuntimeNeedsRepair}
+							>
+								<Activity className="mr-1 size-3.5" />
+								Repair Runtime
+							</Button>
+						</>
+					) : null}
 				</div>
 			) : null}
 
@@ -394,6 +446,50 @@ export const DomainHealthPanel = ({
 						Shared Runtime Detail
 					</div>
 					<div>{summary.sharedRuntimeMessage}</div>
+				</div>
+			) : null}
+
+			{cloudflareDriftState?.status ? (
+				<div
+					className={`grid gap-2 rounded-md border p-3 text-sm ${
+						cloudflareDriftState.status === "healthy"
+							? "border-green-500/30 bg-green-500/5 text-green-700 dark:text-green-400"
+							: cloudflareDriftState.status === "drifted"
+								? "border-yellow-500/30 bg-yellow-500/5 text-yellow-700 dark:text-yellow-500"
+								: "border-red-500/30 bg-red-500/5 text-red-700 dark:text-red-400"
+					}`}
+				>
+					<div className="flex items-center gap-2 font-medium">
+						<Activity className="size-4" />
+						Cloudflare Drift Check
+					</div>
+					<div className="grid gap-1 text-xs sm:text-sm">
+						<div>Status: {cloudflareDriftState.status}</div>
+						<div>Tunnel exists: {cloudflareDriftState.tunnelExists ? "yes" : "no"}</div>
+						<div>Ingress exists: {cloudflareDriftState.routeExists ? "yes" : "no"}</div>
+						<div>DNS exists: {cloudflareDriftState.dnsExists ? "yes" : "no"}</div>
+						{cloudflareDriftState.expectedService ? (
+							<div>Expected origin: {cloudflareDriftState.expectedService}</div>
+						) : null}
+						{cloudflareDriftState.observedService ? (
+							<div>Observed origin: {cloudflareDriftState.observedService}</div>
+						) : null}
+						{cloudflareDriftState.expectedDnsTarget ? (
+							<div>Expected DNS: {cloudflareDriftState.expectedDnsTarget}</div>
+						) : null}
+						{cloudflareDriftState.observedDnsTarget ? (
+							<div>Observed DNS: {cloudflareDriftState.observedDnsTarget}</div>
+						) : null}
+					</div>
+					{cloudflareDriftState.issues?.length ? (
+						<div className="grid gap-1">
+							{cloudflareDriftState.issues.map((issue) => (
+								<div key={issue}>{issue}</div>
+							))}
+						</div>
+					) : (
+						<div>Cloudflare route and DNS match Dokploy expectations.</div>
+					)}
 				</div>
 			) : null}
 
