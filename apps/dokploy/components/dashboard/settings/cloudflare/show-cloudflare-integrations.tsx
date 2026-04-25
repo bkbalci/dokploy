@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { api } from "@/utils/api";
 import { HandleCloudflareIntegration } from "./handle-cloudflare-integration";
+import { ShowCloudflareRuntimes } from "./show-cloudflare-runtimes";
 
 export const ShowCloudflareIntegrations = () => {
 	const { data, isPending, refetch } = api.cloudflare.all.useQuery();
@@ -21,7 +22,7 @@ export const ShowCloudflareIntegrations = () => {
 		api.cloudflare.remove.useMutation();
 
 	return (
-		<div className="w-full">
+		<div className="w-full space-y-4">
 			<Card className="h-full bg-sidebar p-2.5 rounded-xl max-w-5xl mx-auto">
 				<div className="rounded-xl bg-background shadow-md">
 					<CardHeader>
@@ -130,6 +131,7 @@ export const ShowCloudflareIntegrations = () => {
 					</CardContent>
 				</div>
 			</Card>
+			<ShowCloudflareRuntimes />
 		</div>
 	);
 };
