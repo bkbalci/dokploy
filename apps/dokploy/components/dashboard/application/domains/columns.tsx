@@ -2,7 +2,6 @@ import type { ColumnDef } from "@tanstack/react-table";
 import {
 	ArrowUpDown,
 	CheckCircle2,
-	Cloud,
 	ExternalLink,
 	Loader2,
 	PenBoxIcon,
@@ -21,19 +20,20 @@ import {
 	TooltipProvider,
 	TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { RouterOutputs } from "@/utils/api";
 import { DnsHelperModal } from "./dns-helper-modal";
+import {
+	DomainHealthBadges,
+	type DomainRecord,
+	type DomainValidationStates,
+} from "./domain-health";
 import { AddDomain } from "./handle-domain";
-import type { ValidationStates } from "./show-domains";
 
-export type Domain =
-	| RouterOutputs["domain"]["byApplicationId"][0]
-	| RouterOutputs["domain"]["byComposeId"][0];
+export type Domain = DomainRecord;
 
 interface ColumnsProps {
 	id: string;
 	type: "application" | "compose";
-	validationStates: ValidationStates;
+	validationStates: DomainValidationStates;
 	handleValidateDomain: (host: string) => Promise<void>;
 	handleDeleteDomain: (domainId: string) => Promise<void>;
 	isDeleting: boolean;
@@ -157,19 +157,14 @@ export const createColumns = ({
 	},
 	{
 		id: "certificate",
-		header: "Certificate",
+		header: "Status",
 		cell: ({ row }) => {
 			const domain = row.original;
 			const validationState = validationStates[domain.host];
 
 			return (
 				<div className="flex items-center gap-2">
-					{domain.publishToCloudflare ? (
-						<Badge variant="outline" className="gap-1">
-							<Cloud className="size-3" />
-							{domain.cloudflareTunnelName || "Cloudflare Tunnel"}
-						</Badge>
-					) : null}
+					<DomainHealthBadges domain={domain} />
 					{domain.certificateType && (
 						<Badge variant="outline" className="capitalize">
 							{domain.certificateType}

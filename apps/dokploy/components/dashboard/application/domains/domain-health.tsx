@@ -1,0 +1,294 @@
+import {
+	AlertTriangle,
+	CheckCircle2,
+	Cloud,
+	RefreshCw,
+	Server,
+	ShieldCheck,
+	ShieldX,
+	Waypoints,
+	XCircle,
+} from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import type { RouterOutputs } from "@/utils/api";
+
+export type DomainRecord =
+	| RouterOutputs["domain"]["byApplicationId"][0]
+	| RouterOutputs["domain"]["byComposeId"][0];
+
+export type DomainValidationState = {
+	isLoading: boolean;
+	isValid?: boolean;
+	error?: string;
+	resolvedIp?: string;
+	message?: string;
+	cdnProvider?: string;
+};
+
+export type DomainValidationStates = Record<string, DomainValidationState>;
+
+type DomainHealthSummary = {
+	status: "healthy" | "warning" | "direct";
+	statusLabel: string;
+	exposureLabel: string;
+	runtimeLabel: string | null;
+	tunnelLabel: string | null;
+	zoneLabel: string | null;
+	originLabel: string;
+	dnsLabel: string;
+	issues: string[];
+};
+
+const getRuntimeLabel = (domain: DomainRecord) => {
+	if (!domain.publishToCloudflare) {
+		return null;
+	}
+
+	switch (domain.cloudflareTunnelMode) {
+		case "sidecar":
+			return "Sidecar Connector";
+		case "shared-managed":
+			return "Shared Connector";
+		default:
+			return "Existing Connector";
+	}
+};
+
+const getOriginLabel = (domain: DomainRecord) => {
+	if (!domain.publishToCloudflare) {
+		return domain.customEntrypoint
+			? domain.customEntrypoint || "Custom entrypoint"
+			: `${domain.host}:${domain.port}`;
+	}
+
+	if (domain.cloudflareTunnelMode === "sidecar") {
+		if (!domain.serviceName || !domain.port) {
+			return "Compose service target missing";
+		}
+
+		return `${domain.serviceName}:${domain.port}`;
+	}
+
+	if (domain.cloudflareTunnelMode === "shared-managed") {
+		return domain.https ? "dokploy-traefik:443" : "dokploy-traefik:80";
+	}
+
+	return domain.https ? "Server:443" : "Server:80";
+};
+
+const getDomainHealthSummary = (domain: DomainRecord): DomainHealthSummary => {
+	if (!domain.publishToCloudflare) {
+		return {
+			status: "direct",
+			statusLabel: "Direct Routing",
+			exposureLabel: "Dokploy DNS",
+			runtimeLabel: null,
+			tunnelLabel: null,
+			zoneLabel: null,
+			originLabel: getOriginLabel(domain),
+			dnsLabel: "Managed outside Cloudflare Tunnel",
+			issues: [],
+		};
+	}
+
+	const issues: string[] = [];
+
+	if (!domain.cloudflareIntegrationId) {
+		issues.push("Cloudflare integration is missing.");
+	}
+
+	if (!domain.cloudflareTunnelId || !domain.cloudflareTunnelName) {
+		issues.push("Cloudflare tunnel selection is incomplete.");
+	}
+
+	if (!domain.cloudflareDnsRecordId) {
+		issues.push("Managed Cloudflare DNS record is not tracked yet.");
+	}
+
+	if (!domain.cloudflareZoneId || !domain.cloudflareZoneName) {
+		issues.push("Cloudflare zone metadata is missing.");
+	}
+
+	if (domain.cloudflareTunnelMode === "sidecar") {
+		if (!domain.composeId) {
+			issues.push("Sidecar mode requires a compose service.");
+		}
+
+		if (!domain.serviceName || !domain.port) {
+			issues.push("Sidecar origin target is incomplete.");
+		}
+	}
+
+	return {
+		status: issues.length > 0 ? "warning" : "healthy",
+		statusLabel: issues.length > 0 ? "Needs Attention" : "Cloudflare Healthy",
+		exposureLabel: "Cloudflare Tunnel",
+		runtimeLabel: getRuntimeLabel(domain),
+		tunnelLabel: domain.cloudflareTunnelName || "Missing tunnel",
+		zoneLabel: domain.cloudflareZoneName || "Missing zone",
+		originLabel: getOriginLabel(domain),
+		dnsLabel: domain.cloudflareDnsRecordId ? "Managed DNS record" : "Pending DNS sync",
+		issues,
+	};
+};
+
+const renderValidationBadge = (
+	domain: DomainRecord,
+	validationState?: DomainValidationState,
+	onValidateDomain?: (host: string) => void,
+) => {
+	if (domain.host.includes("traefik.me") || !onValidateDomain) {
+		return null;
+	}
+
+	return (
+		<Button
+			variant="outline"
+			size="sm"
+			className="h-8 gap-2"
+			onClick={() => onValidateDomain(domain.host)}
+		>
+			{validationState?.isLoading ? (
+				<>
+					<RefreshCw className="size-3.5 animate-spin" />
+					Checking DNS
+				</>
+			) : validationState?.isValid ? (
+				<>
+					<CheckCircle2 className="size-3.5 text-green-500" />
+					{validationState.cdnProvider
+						? `Behind ${validationState.cdnProvider}`
+						: "DNS Valid"}
+				</>
+			) : validationState?.error ? (
+				<>
+					<XCircle className="size-3.5 text-red-500" />
+					DNS Error
+				</>
+			) : (
+				<>
+					<RefreshCw className="size-3.5" />
+					Validate DNS
+				</>
+			)}
+		</Button>
+	);
+};
+
+export const DomainHealthBadges = ({ domain }: { domain: DomainRecord }) => {
+	const summary = getDomainHealthSummary(domain);
+
+	return (
+		<div className="flex flex-wrap gap-2">
+			<Badge
+				variant="outline"
+				className={
+					summary.status === "healthy"
+						? "border-green-500/30 bg-green-500/10 text-green-600"
+						: summary.status === "warning"
+							? "border-yellow-500/30 bg-yellow-500/10 text-yellow-600"
+							: "border-blue-500/30 bg-blue-500/10 text-blue-600"
+				}
+			>
+				{summary.status === "healthy" ? (
+					<ShieldCheck className="mr-1 size-3" />
+				) : summary.status === "warning" ? (
+					<ShieldX className="mr-1 size-3" />
+				) : (
+					<Server className="mr-1 size-3" />
+				)}
+				{summary.statusLabel}
+			</Badge>
+			{summary.runtimeLabel ? (
+				<Badge variant="outline" className="capitalize">
+					<Waypoints className="mr-1 size-3" />
+					{summary.runtimeLabel}
+				</Badge>
+			) : null}
+			{domain.publishToCloudflare ? (
+				<Badge variant="outline">
+					<Cloud className="mr-1 size-3" />
+					{summary.dnsLabel}
+				</Badge>
+			) : null}
+		</div>
+	);
+};
+
+export const DomainHealthPanel = ({
+	domain,
+	validationState,
+	onValidateDomain,
+}: {
+	domain: DomainRecord;
+	validationState?: DomainValidationState;
+	onValidateDomain?: (host: string) => void;
+}) => {
+	const summary = getDomainHealthSummary(domain);
+
+	return (
+		<div className="grid gap-3 rounded-lg border bg-muted/20 p-4">
+			<div className="flex items-start justify-between gap-3 max-sm:flex-col">
+				<div className="grid gap-2">
+					<div className="text-sm font-medium">Health Overview</div>
+					<DomainHealthBadges domain={domain} />
+				</div>
+				{renderValidationBadge(domain, validationState, onValidateDomain)}
+			</div>
+
+			<div className="grid gap-2 text-sm md:grid-cols-2">
+				<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+					<span className="text-muted-foreground">Exposure</span>
+					<span className="font-medium">{summary.exposureLabel}</span>
+				</div>
+				<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+					<span className="text-muted-foreground">Origin</span>
+					<span className="font-medium">{summary.originLabel}</span>
+				</div>
+				{summary.runtimeLabel ? (
+					<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+						<span className="text-muted-foreground">Runtime</span>
+						<span className="font-medium">{summary.runtimeLabel}</span>
+					</div>
+				) : null}
+				{summary.tunnelLabel ? (
+					<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+						<span className="text-muted-foreground">Tunnel</span>
+						<span className="font-medium">{summary.tunnelLabel}</span>
+					</div>
+				) : null}
+				{summary.zoneLabel ? (
+					<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+						<span className="text-muted-foreground">Zone</span>
+						<span className="font-medium">{summary.zoneLabel}</span>
+					</div>
+				) : null}
+				<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
+					<span className="text-muted-foreground">DNS</span>
+					<span className="font-medium">{summary.dnsLabel}</span>
+				</div>
+			</div>
+
+			{validationState?.resolvedIp ? (
+				<div className="text-xs text-muted-foreground">
+					Resolved IP: {validationState.resolvedIp}
+				</div>
+			) : null}
+
+			{summary.issues.length > 0 ? (
+				<div className="grid gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-sm text-yellow-700 dark:text-yellow-500">
+					<div className="flex items-center gap-2 font-medium">
+						<AlertTriangle className="size-4" />
+						Attention Needed
+					</div>
+					<div className="grid gap-1">
+						{summary.issues.map((issue) => (
+							<div key={issue}>{issue}</div>
+						))}
+					</div>
+				</div>
+			) : null}
+		</div>
+	);
+};

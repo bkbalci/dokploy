@@ -10,9 +10,7 @@ import {
 	type VisibilityState,
 } from "@tanstack/react-table";
 import {
-	CheckCircle2,
 	ChevronDown,
-	Cloud,
 	ExternalLink,
 	GlobeIcon,
 	InfoIcon,
@@ -20,10 +18,8 @@ import {
 	LayoutList,
 	Loader2,
 	PenBoxIcon,
-	RefreshCw,
 	Server,
 	Trash2,
-	XCircle,
 } from "lucide-react";
 import Link from "next/link";
 import { useState } from "react";
@@ -62,18 +58,11 @@ import {
 import { api } from "@/utils/api";
 import { createColumns } from "./columns";
 import { DnsHelperModal } from "./dns-helper-modal";
+import {
+	DomainHealthPanel,
+	type DomainValidationStates,
+} from "./domain-health";
 import { AddDomain } from "./handle-domain";
-
-export type ValidationState = {
-	isLoading: boolean;
-	isValid?: boolean;
-	error?: string;
-	resolvedIp?: string;
-	message?: string;
-	cdnProvider?: string;
-};
-
-export type ValidationStates = Record<string, ValidationState>;
 
 interface Props {
 	id: string;
@@ -102,9 +91,8 @@ export const ShowDomains = ({ id, type }: Props) => {
 						enabled: !!id,
 					},
 				);
-	const [validationStates, setValidationStates] = useState<ValidationStates>(
-		{},
-	);
+	const [validationStates, setValidationStates] =
+		useState<DomainValidationStates>({});
 	const [viewMode, setViewMode] = useState<"grid" | "table">(() => {
 		if (typeof window !== "undefined") {
 			return (
@@ -437,8 +425,8 @@ export const ShowDomains = ({ id, type }: Props) => {
 																	application?.server?.ipAddress?.toString() ||
 																	ip?.toString()
 																}
-																	publishToCloudflare={item.publishToCloudflare}
-																	cloudflareTunnelName={item.cloudflareTunnelName}
+																publishToCloudflare={item.publishToCloudflare}
+																cloudflareTunnelName={item.cloudflareTunnelName}
 															/>
 														)}
 														{canCreateDomain && (
@@ -578,71 +566,13 @@ export const ShowDomains = ({ id, type }: Props) => {
 															</Tooltip>
 														</TooltipProvider>
 													))}
-
-													<TooltipProvider>
-														<Tooltip>
-															<TooltipTrigger asChild>
-																<Badge
-																	variant="outline"
-																	className={
-																		validationState?.isValid
-																			? "bg-green-500/10 text-green-500 cursor-pointer"
-																			: validationState?.error
-																				? "bg-red-500/10 text-red-500 cursor-pointer"
-																				: "bg-yellow-500/10 text-yellow-500 cursor-pointer"
-																	}
-																	onClick={() =>
-																		handleValidateDomain(item.host)
-																	}
-																>
-																	{validationState?.isLoading ? (
-																		<>
-																			<Loader2 className="size-3 mr-1 animate-spin" />
-																			Checking DNS...
-																		</>
-																	) : validationState?.isValid ? (
-																		<>
-																			<CheckCircle2 className="size-3 mr-1" />
-																			{validationState.message &&
-																			validationState.cdnProvider
-																				? `Behind ${validationState.cdnProvider}`
-																				: "DNS Valid"}
-																		</>
-																	) : validationState?.error ? (
-																		<>
-																			<XCircle className="size-3 mr-1" />
-																			{validationState.error}
-																		</>
-																	) : (
-																		<>
-																			<RefreshCw className="size-3 mr-1" />
-																			Validate DNS
-																		</>
-																	)}
-																</Badge>
-															</TooltipTrigger>
-															<TooltipContent className="max-w-xs">
-																{validationState?.error ? (
-																	<div className="flex flex-col gap-1">
-																		<p className="font-medium text-red-500">
-																			Error:
-																		</p>
-																		<p>{validationState.error}</p>
-																	</div>
-																) : (
-																	"Click to validate DNS configuration"
-																)}
-															</TooltipContent>
-														</Tooltip>
-													</TooltipProvider>
-
-													{item.publishToCloudflare ? (
-														<Badge variant="outline">
-															<Cloud className="size-3 mr-1" />
-															{item.cloudflareTunnelName || "Cloudflare Tunnel"}
-														</Badge>
-													) : null}
 												</div>
+
+												<DomainHealthPanel
+													domain={item}
+													validationState={validationState}
+													onValidateDomain={handleValidateDomain}
+												/>
 											</div>
 										</CardContent>
 									</Card>
