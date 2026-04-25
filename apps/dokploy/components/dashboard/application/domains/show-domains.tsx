@@ -134,6 +134,11 @@ export const ShowDomains = ({ id, type }: Props) => {
 		api.domain.validateDomain.useMutation();
 	const { mutateAsync: deleteDomain, isPending: isRemoving } =
 		api.domain.delete.useMutation();
+	const { mutateAsync: reconcileSharedRuntime, isPending: isReconcilingSharedRuntime } =
+		api.cloudflare.reconcileSharedRuntime.useMutation();
+	const { mutateAsync: repairSharedRuntime, isPending: isRepairingSharedRuntime } =
+		api.cloudflare.repairSharedRuntime.useMutation();
+	const canManageSharedRuntime = permissions?.organization.update ?? false;
 
 	const handleDeleteDomain = async (domainId: string) => {
 		try {
@@ -179,6 +184,60 @@ export const ShowDomains = ({ id, type }: Props) => {
 					error: error.message || "Failed to validate domain",
 				},
 			}));
+		}
+	};
+
+	const handleReconcileSharedRuntime = async (
+		domain: NonNullable<typeof data>[number],
+	) => {
+		const runtime =
+			"cloudflareSharedRuntime" in domain ? domain.cloudflareSharedRuntime : null;
+
+		if (!runtime) {
+			toast.error("Shared runtime record is missing for this domain");
+			return;
+		}
+
+		try {
+			await reconcileSharedRuntime({
+				cloudflareTunnelRuntimeId: runtime.cloudflareTunnelRuntimeId,
+			});
+			await refetch();
+			toast.success("Shared runtime reconciled");
+		} catch (error) {
+			toast.error("Failed to reconcile shared runtime", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
+		}
+	};
+
+	const handleRepairSharedRuntime = async (
+		domain: NonNullable<typeof data>[number],
+	) => {
+		const runtime =
+			"cloudflareSharedRuntime" in domain ? domain.cloudflareSharedRuntime : null;
+
+		if (!runtime) {
+			toast.error("Shared runtime record is missing for this domain");
+			return;
+		}
+
+		try {
+			const result = await repairSharedRuntime({
+				cloudflareTunnelRuntimeId: runtime.cloudflareTunnelRuntimeId,
+			});
+			await refetch();
+			toast.success(
+				result.action === "noop"
+					? "Shared runtime does not need repair"
+					: "Shared runtime repaired",
+			);
+		} catch (error) {
+			toast.error("Failed to repair shared runtime", {
+				description:
+					error instanceof Error ? error.message : "Unknown error",
+			});
 		}
 	};
 
@@ -572,6 +631,11 @@ export const ShowDomains = ({ id, type }: Props) => {
 													domain={item}
 													validationState={validationState}
 													onValidateDomain={handleValidateDomain}
+													canManageSharedRuntime={canManageSharedRuntime}
+													isReconcilingSharedRuntime={isReconcilingSharedRuntime}
+													isRepairingSharedRuntime={isRepairingSharedRuntime}
+													onReconcileSharedRuntime={handleReconcileSharedRuntime}
+													onRepairSharedRuntime={handleRepairSharedRuntime}
 												/>
 											</div>
 										</CardContent>

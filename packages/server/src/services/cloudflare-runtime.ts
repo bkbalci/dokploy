@@ -824,15 +824,27 @@ export const listSharedManagedCloudflareTunnelRuntimes = async (
     });
 };
 
-export const reconcileSharedManagedCloudflareTunnelRuntime = async (
-    cloudflareTunnelRuntimeId: string,
-) => {
+export const reconcileSharedManagedCloudflareTunnelRuntime = async ({
+    cloudflareTunnelRuntimeId,
+    organizationId,
+}: {
+    cloudflareTunnelRuntimeId: string;
+    organizationId?: string;
+}) => {
     const runtime = await findRuntimeById(cloudflareTunnelRuntimeId);
 
     if (!runtime) {
         throw new TRPCError({
             code: "NOT_FOUND",
             message: "Cloudflare shared runtime not found",
+        });
+    }
+
+    if (organizationId && runtime.organizationId !== organizationId) {
+        throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message:
+                "You are not allowed to reconcile this Cloudflare shared runtime",
         });
     }
 
@@ -886,7 +898,10 @@ export const reconcileAllSharedManagedCloudflareTunnelRuntimes = async (
     for (const runtime of runtimes) {
         try {
             const result = await reconcileSharedManagedCloudflareTunnelRuntime(
-                runtime.cloudflareTunnelRuntimeId,
+                {
+                    cloudflareTunnelRuntimeId: runtime.cloudflareTunnelRuntimeId,
+                    organizationId,
+                },
             );
             if (result.changed) {
                 changedCount += 1;
@@ -944,7 +959,10 @@ export const repairSharedManagedCloudflareTunnelRuntime = async ({
 
     const action = await repairRuntimeResource(runtime, summary);
     const reconciled = await reconcileSharedManagedCloudflareTunnelRuntime(
-        runtime.cloudflareTunnelRuntimeId,
+        {
+            cloudflareTunnelRuntimeId: runtime.cloudflareTunnelRuntimeId,
+            organizationId,
+        },
     );
 
     return {

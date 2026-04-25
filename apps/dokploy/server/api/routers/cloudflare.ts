@@ -5,6 +5,7 @@ import {
     listCloudflareIntegrationsByOrganizationId,
     listSharedManagedCloudflareTunnelRuntimes,
     reconcileAllSharedManagedCloudflareTunnelRuntimes,
+    reconcileSharedManagedCloudflareTunnelRuntime,
     recreateSharedManagedCloudflareTunnelRuntime,
     removeCloudflareIntegration,
     repairDriftedSharedManagedCloudflareTunnelRuntimes,
@@ -141,6 +142,27 @@ export const cloudflareRouter = createTRPCRouter({
 
         return result;
     }),
+    reconcileSharedRuntime: adminProcedure
+        .input(
+            z.object({
+                cloudflareTunnelRuntimeId: z.string().min(1),
+            }),
+        )
+        .mutation(async ({ input, ctx }) => {
+            const runtime = await reconcileSharedManagedCloudflareTunnelRuntime({
+                organizationId: ctx.session.activeOrganizationId,
+                cloudflareTunnelRuntimeId: input.cloudflareTunnelRuntimeId,
+            });
+
+            await audit(ctx, {
+                action: "update",
+                resourceType: "settings",
+                resourceId: input.cloudflareTunnelRuntimeId,
+                resourceName: runtime.summary.cloudflareTunnelName,
+            });
+
+            return runtime;
+        }),
     repairDriftedSharedRuntimes: adminProcedure.mutation(async ({ ctx }) => {
         const result = await repairDriftedSharedManagedCloudflareTunnelRuntimes(
             ctx.session.activeOrganizationId,

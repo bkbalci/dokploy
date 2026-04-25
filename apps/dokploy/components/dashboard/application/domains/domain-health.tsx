@@ -280,12 +280,23 @@ export const DomainHealthPanel = ({
 	domain,
 	validationState,
 	onValidateDomain,
+	canManageSharedRuntime,
+	isReconcilingSharedRuntime,
+	isRepairingSharedRuntime,
+	onReconcileSharedRuntime,
+	onRepairSharedRuntime,
 }: {
 	domain: DomainRecord;
 	validationState?: DomainValidationState;
 	onValidateDomain?: (host: string) => void;
+	canManageSharedRuntime?: boolean;
+	isReconcilingSharedRuntime?: boolean;
+	isRepairingSharedRuntime?: boolean;
+	onReconcileSharedRuntime?: (domain: DomainRecord) => void;
+	onRepairSharedRuntime?: (domain: DomainRecord) => void;
 }) => {
 	const summary = getDomainHealthSummary(domain);
+	const sharedRuntime = getSharedRuntime(domain);
 
 	return (
 		<div className="grid gap-3 rounded-lg border bg-muted/20 p-4">
@@ -296,6 +307,30 @@ export const DomainHealthPanel = ({
 				</div>
 				{renderValidationBadge(domain, validationState, onValidateDomain)}
 			</div>
+
+			{canManageSharedRuntime && sharedRuntime ? (
+				<div className="flex flex-wrap gap-2">
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => onReconcileSharedRuntime?.(domain)}
+						isLoading={isReconcilingSharedRuntime}
+					>
+						<RefreshCw className="mr-1 size-3.5" />
+						Reconcile Runtime
+					</Button>
+					<Button
+						variant="outline"
+						size="sm"
+						onClick={() => onRepairSharedRuntime?.(domain)}
+						isLoading={isRepairingSharedRuntime}
+						disabled={!summary.sharedRuntimeNeedsRepair}
+					>
+						<Activity className="mr-1 size-3.5" />
+						Repair Runtime
+					</Button>
+				</div>
+			) : null}
 
 			<div className="grid gap-2 text-sm md:grid-cols-2">
 				<div className="flex items-center justify-between gap-3 rounded-md border bg-background px-3 py-2">
