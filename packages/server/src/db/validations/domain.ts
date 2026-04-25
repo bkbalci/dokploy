@@ -22,7 +22,7 @@ export const domain = z
 		customCertResolver: z.string(),
 		publishToCloudflare: z.boolean().optional(),
 		cloudflareTunnelMode: z
-			.enum(["existing-instance", "sidecar"])
+			.enum(["existing-instance", "sidecar", "shared-managed"])
 			.optional(),
 		cloudflareIntegrationId: z.string().optional(),
 		cloudflareTunnelId: z.string().optional(),
@@ -124,7 +124,7 @@ export const domainCompose = z
 		serviceName: z.string().min(1, { message: "Service name is required" }),
 		publishToCloudflare: z.boolean().optional(),
 		cloudflareTunnelMode: z
-			.enum(["existing-instance", "sidecar"])
+			.enum(["existing-instance", "sidecar", "shared-managed"])
 			.optional(),
 		cloudflareIntegrationId: z.string().optional(),
 		cloudflareTunnelId: z.string().optional(),

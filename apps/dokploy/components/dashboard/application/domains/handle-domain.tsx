@@ -71,7 +71,7 @@ export const domain = z
 		domainType: z.enum(["application", "compose", "preview"]).optional(),
 		publishToCloudflare: z.boolean().optional(),
 		cloudflareTunnelMode: z
-			.enum(["existing-instance", "sidecar"])
+			.enum(["existing-instance", "sidecar", "shared-managed"])
 			.optional(),
 		cloudflareIntegrationId: z.string().optional(),
 		cloudflareTunnelId: z.string().optional(),
@@ -190,6 +190,20 @@ export const domain = z
 
 type Domain = z.infer<typeof domain>;
 
+const buildSuggestedCloudflareTunnelName = (
+	appName?: string,
+	host?: string,
+) => {
+	const rawName = ["dokploy-sidecar", appName || "app", host || "domain"]
+		.join("-")
+		.toLowerCase()
+		.replace(/[^a-z0-9-]/g, "-")
+		.replace(/-+/g, "-")
+		.replace(/^-|-$/g, "");
+
+	return (rawName || "dokploy-sidecar-tunnel").slice(0, 63);
+};
+
 interface Props {
 	id: string;
 	type: "application" | "compose";
@@ -201,6 +215,7 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 	const [isOpen, setIsOpen] = useState(false);
 	const [cacheType, setCacheType] = useState<CacheType>("cache");
 	const [isManualInput, setIsManualInput] = useState(false);
+	const [newCloudflareTunnelName, setNewCloudflareTunnelName] = useState("");
 
 	const utils = api.useUtils();
 	const { data, refetch } = api.domain.one.useQuery(
@@ -303,6 +318,16 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 	const cloudflareTunnelMode = form.watch("cloudflareTunnelMode");
 	const selectedCloudflareIntegrationId = form.watch("cloudflareIntegrationId");
 	const selectedCloudflareTunnelId = form.watch("cloudflareTunnelId");
+	const cloudflareTunnelQueryInput =
+		type === "application"
+			? {
+				applicationId: id,
+				cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
+			}
+			: {
+				composeId: id,
+				cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
+			};
 	const isTraefikMeDomain = host?.includes("traefik.me") || false;
 	const selectedCloudflareIntegration = cloudflareIntegrations?.find(
 		(integration) =>
@@ -312,15 +337,7 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 		data: cloudflareTunnelOptions,
 		isLoading: isLoadingCloudflareTunnelOptions,
 	} = api.domain.cloudflareTunnelOptions.useQuery(
-		type === "application"
-			? {
-				applicationId: id,
-				cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
-			}
-			: {
-				composeId: id,
-				cloudflareIntegrationId: selectedCloudflareIntegrationId || "",
-			},
+		cloudflareTunnelQueryInput,
 		{
 			enabled:
 				isOpen &&
@@ -330,6 +347,10 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 			refetchOnWindowFocus: false,
 		},
 	);
+	const {
+		mutateAsync: createCloudflareTunnel,
+		isPending: isCreatingCloudflareTunnel,
+	} = api.domain.createCloudflareTunnel.useMutation();
 	const selectedCloudflareTunnel = cloudflareTunnelOptions?.tunnels.find(
 		(tunnel) => tunnel.id === selectedCloudflareTunnelId,
 	);
@@ -395,6 +416,28 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 			);
 		}
 	}, [cloudflareIntegrations, domainId, form, isOpen]);
+
+	useEffect(() => {
+		if (
+			!isOpen ||
+			!publishToCloudflare ||
+			cloudflareTunnelMode !== "sidecar" ||
+			!!newCloudflareTunnelName
+		) {
+			return;
+		}
+
+		setNewCloudflareTunnelName(
+			buildSuggestedCloudflareTunnelName(application?.appName, host),
+		);
+	}, [
+		application?.appName,
+		cloudflareTunnelMode,
+		host,
+		isOpen,
+		newCloudflareTunnelName,
+		publishToCloudflare,
+	]);
 
 	useEffect(() => {
 		if (!publishToCloudflare) {
@@ -497,6 +540,7 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				}
 
 				if (domainId) {
+					setNewCloudflareTunnelName("");
 					refetch();
 				}
 				setIsOpen(false);
@@ -505,6 +549,42 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 				console.log(e);
 				toast.error(dictionary.error);
 			});
+	};
+
+	const handleCreateCloudflareTunnel = async () => {
+		if (!selectedCloudflareIntegrationId) {
+			toast.error("Select a Cloudflare integration first");
+			return;
+		}
+
+		const tunnelName = newCloudflareTunnelName.trim();
+		if (!tunnelName) {
+			toast.error("Enter a tunnel name");
+			return;
+		}
+
+		try {
+			const createdTunnel = await createCloudflareTunnel({
+				...cloudflareTunnelQueryInput,
+				cloudflareIntegrationId: selectedCloudflareIntegrationId,
+				name: tunnelName,
+			});
+
+			await utils.domain.cloudflareTunnelOptions.invalidate(
+				cloudflareTunnelQueryInput,
+			);
+			form.setValue("cloudflareTunnelId", createdTunnel.id, {
+				shouldValidate: true,
+			});
+			setNewCloudflareTunnelName(createdTunnel.name);
+			toast.success(`Created Cloudflare tunnel '${createdTunnel.name}'`);
+		} catch (error) {
+			toast.error(
+				error instanceof Error
+					? error.message
+					: "Failed to create Cloudflare tunnel",
+			);
+		}
 	};
 	return (
 		<Dialog open={isOpen} onOpenChange={setIsOpen}>
@@ -862,6 +942,9 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 																	<SelectItem value="existing-instance">
 																		Use Existing Tunnel Instance
 																	</SelectItem>
+																	<SelectItem value="shared-managed">
+																		Use Dokploy Managed Shared Connector
+																	</SelectItem>
 																	<SelectItem value="sidecar" disabled={type !== "compose"}>
 																		Start Cloudflared Sidecar
 																	</SelectItem>
@@ -869,8 +952,8 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 															</Select>
 															<FormDescription>
 																{type === "compose"
-																	? "Use an already running cloudflared instance, or let Dokploy start a sidecar in this compose deployment."
-																	: "Application services currently support the existing tunnel instance mode only."}
+																	? "Use an already running cloudflared instance, let Dokploy run one shared connector on the target server, or start a sidecar in this compose deployment."
+																	: "Application services support existing tunnel instances and the Dokploy-managed shared connector."}
 															</FormDescription>
 															<FormMessage />
 														</FormItem>
@@ -899,6 +982,7 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 																			{cloudflareTunnelOptions?.tunnels.map((tunnel) => (
 																				<SelectItem key={tunnel.id} value={tunnel.id}>
 																					{tunnel.name}
+																					{tunnel.isDokployManaged ? " · Dokploy" : ""}
 																				</SelectItem>
 																			))}
 																		</SelectContent>
@@ -914,6 +998,36 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 															)}
 														/>
 
+																{cloudflareTunnelMode === "sidecar" ? (
+																	<div className="grid gap-2 rounded-md border border-dashed p-3">
+																		<div className="text-sm font-medium">
+																			Create Dedicated Tunnel
+																		</div>
+																		<FormDescription>
+																			Create a Dokploy-managed sidecar tunnel just for this test or deployment.
+																		</FormDescription>
+																		<div className="flex gap-2">
+																			<Input
+																				value={newCloudflareTunnelName}
+																				onChange={(event) =>
+																					setNewCloudflareTunnelName(event.target.value)
+																				}
+																				placeholder="dokploy-sidecar-my-app"
+																				maxLength={63}
+																			/>
+																			<Button
+																				type="button"
+																				variant="secondary"
+																				onClick={handleCreateCloudflareTunnel}
+																				isLoading={isCreatingCloudflareTunnel}
+																				disabled={!selectedCloudflareIntegrationId}
+																			>
+																				Create Tunnel
+																			</Button>
+																		</div>
+																	</div>
+																) : null}
+
 														<AlertBlock
 															type={
 																cloudflareTunnelOptions?.tunnels.length
@@ -924,10 +1038,16 @@ export const AddDomain = ({ id, type, domainId = "", children }: Props) => {
 															{cloudflareTunnelOptions?.tunnels.length
 																? selectedCloudflareTunnel
 																	? cloudflareTunnelMode === "sidecar"
-																		? `Dokploy will start a cloudflared sidecar for tunnel '${selectedCloudflareTunnel.name}' and route '${host || "this host"}' directly to the selected compose service.`
-																		: `Dokploy will publish '${host || "this host"}' into tunnel '${selectedCloudflareTunnel.name}'.${selectedCloudflareIntegration.defaultTunnelId === selectedCloudflareTunnel.id ? " This integration default is preselected for convenience." : ""}`
+																		? `Dokploy will start a cloudflared sidecar for tunnel '${selectedCloudflareTunnel.name}' and route '${host || "this host"}' directly to the selected compose service.${selectedCloudflareTunnel.isDokployManaged ? " This tunnel was created by Dokploy." : ""}`
+																		: cloudflareTunnelMode === "shared-managed"
+																			? `Dokploy will reuse or start one shared cloudflared connector for tunnel '${selectedCloudflareTunnel.name}' on the target server and route '${host || "this host"}' through Dokploy Traefik.${selectedCloudflareTunnel.isDokployManaged ? " This tunnel was created by Dokploy." : ""}`
+																			: `Dokploy will publish '${host || "this host"}' into tunnel '${selectedCloudflareTunnel.name}'.${selectedCloudflareIntegration.defaultTunnelId === selectedCloudflareTunnel.id ? " This integration default is preselected for convenience." : ""}${selectedCloudflareTunnel.isDokployManaged ? " This tunnel was created by Dokploy." : ""}`
 																	: "Select which Cloudflare tunnel should receive this domain route."
-																: "No Cloudflare tunnels were found for the selected integration/account."}
+																: cloudflareTunnelMode === "sidecar"
+																	? "No Cloudflare tunnels were found for the selected integration/account yet. Create a dedicated sidecar tunnel below."
+																	: cloudflareTunnelMode === "shared-managed"
+																		? "No Cloudflare tunnels were found for the selected integration/account. Create or select a tunnel first, then Dokploy can manage a shared connector for it."
+																	: "No Cloudflare tunnels were found for the selected integration/account."}
 														</AlertBlock>
 													</>
 												) : null}

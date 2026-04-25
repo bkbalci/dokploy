@@ -28,6 +28,18 @@ enum certificateType {
 enum cloudflareTunnelMode {
   "existing-instance"
   sidecar
+  "shared-managed"
+}
+
+enum cloudflareTunnelRuntimeMode {
+  "shared-managed"
+}
+
+enum cloudflareTunnelRuntimeStatus {
+  pending
+  running
+  error
+  stopped
 }
 
 enum composeType {
@@ -403,6 +415,23 @@ table cloudflare_integration {
   userId text [not null]
   createdAt timestamp [not null, default: `now()`]
   updatedAt timestamp [not null, default: `now()`]
+}
+
+table cloudflare_tunnel_runtime {
+  cloudflareTunnelRuntimeId text [pk, not null]
+  organizationId text [not null]
+  serverId text
+  cloudflareIntegrationId text [not null]
+  cloudflareTunnelId text [not null]
+  cloudflareTunnelName text [not null]
+  runtimeMode cloudflareTunnelRuntimeMode [not null, default: 'shared-managed']
+  dockerResourceName text [not null]
+  status cloudflareTunnelRuntimeStatus [not null, default: 'pending']
+  lastError text
+  lastStartedAt text
+  lastSeenAt text
+  createdAt text [not null]
+  updatedAt text [not null]
 }
 
 table compose {

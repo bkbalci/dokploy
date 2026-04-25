@@ -23,6 +23,10 @@ import {
 	upsertCloudflareDnsRecord,
 	upsertCloudflareTunnelIngress,
 } from "./cloudflare";
+import {
+	ensureSharedManagedCloudflareTunnelRuntime,
+	releaseSharedManagedCloudflareTunnelRuntime,
+} from "./cloudflare-runtime";
 import { findComposeById } from "./compose";
 import { findServerById } from "./server";
 
@@ -93,6 +97,22 @@ const getCloudflareOriginService = async (domain: Domain) => {
 
 		return {
 			service: `http://${domain.serviceName}:${domain.port}`,
+			originRequest: undefined,
+		};
+	}
+
+	if (domain.cloudflareTunnelMode === "shared-managed") {
+		if (domain.https) {
+			return {
+				service: "https://dokploy-traefik:443",
+				originRequest: {
+					noTLSVerify: true,
+				},
+			};
+		}
+
+		return {
+			service: "http://dokploy-traefik:80",
 			originRequest: undefined,
 		};
 	}
@@ -185,6 +205,8 @@ export const removeCloudflareDomainSync = async (domain: Domain) => {
 		domainId: domain.domainId,
 		dnsRecordId: domain.cloudflareDnsRecordId,
 	});
+
+	await releaseSharedManagedCloudflareTunnelRuntime(domain);
 };
 
 export const syncCloudflareDomain = async (
@@ -230,45 +252,77 @@ export const syncCloudflareDomain = async (
 		await removeCloudflareDomainSync(currentDomain);
 	}
 
-	const zone = await findCloudflareZoneForHostname({
-		apiToken: integration.apiToken,
-		hostname: nextDomain.host,
-		preferredZoneId: integration.defaultZoneId,
-		preferredZoneName: integration.defaultZoneName,
-	});
-	const origin = await getCloudflareOriginService(nextDomain);
+	let ensuredSharedRuntime = false;
+	if (nextDomain.cloudflareTunnelMode === "shared-managed") {
+		await ensureSharedManagedCloudflareTunnelRuntime({
+			organizationId: integration.organizationId,
+			cloudflareIntegrationId: integration.cloudflareIntegrationId,
+			cloudflareTunnelId: tunnel.id,
+			cloudflareTunnelName: tunnel.name,
+			domain: nextDomain,
+		});
+		ensuredSharedRuntime = true;
+	}
 
-	await upsertCloudflareTunnelIngress({
-		apiToken: integration.apiToken,
-		accountId: integration.accountId,
-		tunnelId: tunnel.id,
-		hostname: nextDomain.host,
-		path: nextDomain.path,
-		service: origin.service,
-		originRequest: origin.originRequest,
-	});
+	try {
+		const zone = await findCloudflareZoneForHostname({
+			apiToken: integration.apiToken,
+			hostname: nextDomain.host,
+			preferredZoneId: integration.defaultZoneId,
+			preferredZoneName: integration.defaultZoneName,
+		});
+		const origin = await getCloudflareOriginService(nextDomain);
 
-	const dnsRecord = await upsertCloudflareDnsRecord({
-		apiToken: integration.apiToken,
-		zoneId: zone.id,
-		hostname: nextDomain.host,
-		tunnelId: tunnel.id,
-		domainId: nextDomain.domainId,
-		existingDnsRecordId:
-			currentDomain?.cloudflareDnsRecordId || nextDomain.cloudflareDnsRecordId,
-	});
+		await upsertCloudflareTunnelIngress({
+			apiToken: integration.apiToken,
+			accountId: integration.accountId,
+			tunnelId: tunnel.id,
+			hostname: nextDomain.host,
+			path: nextDomain.path,
+			service: origin.service,
+			originRequest: origin.originRequest,
+		});
 
-	return {
-		publishToCloudflare: true,
-		cloudflareTunnelMode:
-			nextDomain.cloudflareTunnelMode || "existing-instance",
-		cloudflareIntegrationId: integration.cloudflareIntegrationId,
-		cloudflareZoneId: zone.id,
-		cloudflareZoneName: zone.name,
-		cloudflareTunnelId: tunnel.id,
-		cloudflareTunnelName: tunnel.name,
-		cloudflareDnsRecordId: dnsRecord.id,
-	} satisfies Partial<Domain>;
+		const dnsRecord = await upsertCloudflareDnsRecord({
+			apiToken: integration.apiToken,
+			zoneId: zone.id,
+			hostname: nextDomain.host,
+			tunnelId: tunnel.id,
+			domainId: nextDomain.domainId,
+			existingDnsRecordId:
+				currentDomain?.cloudflareDnsRecordId || nextDomain.cloudflareDnsRecordId,
+		});
+
+		return {
+			publishToCloudflare: true,
+			cloudflareTunnelMode:
+				nextDomain.cloudflareTunnelMode || "existing-instance",
+			cloudflareIntegrationId: integration.cloudflareIntegrationId,
+			cloudflareZoneId: zone.id,
+			cloudflareZoneName: zone.name,
+			cloudflareTunnelId: tunnel.id,
+			cloudflareTunnelName: tunnel.name,
+			cloudflareDnsRecordId: dnsRecord.id,
+		} satisfies Partial<Domain>;
+	} catch (error) {
+		const currentTunnelId =
+			currentDomain?.cloudflareTunnelId ||
+			(currentDomain?.publishToCloudflare
+				? integration.defaultTunnelId
+				: null);
+		const alreadyUsingSharedRuntime =
+			currentDomain?.cloudflareTunnelMode === "shared-managed" &&
+			currentDomain.cloudflareIntegrationId === integration.cloudflareIntegrationId &&
+			currentTunnelId === tunnel.id;
+
+		if (ensuredSharedRuntime && !alreadyUsingSharedRuntime) {
+			await releaseSharedManagedCloudflareTunnelRuntime(nextDomain).catch(
+				() => null,
+			);
+		}
+
+		throw error;
+	}
 };
 
 export const createDomain = async (input: z.infer<typeof apiCreateDomain>) => {

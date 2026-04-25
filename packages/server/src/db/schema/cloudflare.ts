@@ -94,10 +94,19 @@ export const apiTestCloudflareConnection = z.object({
     accountId: z.string().min(1),
 });
 
+export const apiCreateCloudflareTunnel = z.object({
+    cloudflareIntegrationId: z.string().min(1),
+    name: z.string().min(1).max(63),
+});
+
 export type ApiCreateCloudflareIntegration = z.infer<
     typeof apiCreateCloudflareIntegration
 >;
 
 export type ApiTestCloudflareConnection = z.infer<
     typeof apiTestCloudflareConnection
+>;
+
+export type ApiCreateCloudflareTunnel = z.infer<
+    typeof apiCreateCloudflareTunnel
 >;

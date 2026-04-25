@@ -27,6 +27,7 @@ export const domainType = pgEnum("domainType", [
 export const cloudflareTunnelMode = pgEnum("cloudflareTunnelMode", [
 	"existing-instance",
 	"sidecar",
+	"shared-managed",
 ]);
 
 export const domains = pgTable("domain", {
@@ -103,7 +104,7 @@ const createSchema = createInsertSchema(domains, {
 	domainType: z.enum(["compose", "application", "preview"]).optional(),
 	publishToCloudflare: z.boolean().optional(),
 	cloudflareTunnelMode: z
-		.enum(["existing-instance", "sidecar"])
+		.enum(["existing-instance", "sidecar", "shared-managed"])
 		.optional()
 		.nullable(),
 	cloudflareIntegrationId: z.string().optional().nullable(),

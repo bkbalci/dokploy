@@ -9,6 +9,7 @@ import type {
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const DOKPLOY_CLOUDFLARE_COMMENT_PREFIX = "Managed by Dokploy Cloudflare Tunnel";
+const DOKPLOY_CLOUDFLARE_TUNNEL_NAME_PREFIX = "dokploy-sidecar-";
 
 interface CloudflareApiError {
     message?: string;
@@ -40,12 +41,23 @@ interface CloudflareTunnel {
     id: string;
     name: string;
     status: string;
+    metadata?: Record<string, unknown> | null;
     conns_active_at?: string | null;
     conns_inactive_at?: string | null;
     connections?: Array<{
         opened_at?: string;
     }>;
 }
+
+type CloudflareTunnelSummary = {
+    id: string;
+    name: string;
+    status: string;
+    connectionCount: number;
+    lastActiveAt: string | null;
+    lastInactiveAt: string | null;
+    isDokployManaged: boolean;
+};
 
 interface CloudflareTunnelIngressRule {
     hostname?: string;
@@ -108,6 +120,34 @@ const normalizeCloudflarePath = (path?: string | null) => {
 const buildDokployCloudflareComment = (domainId: string) => {
     return `${DOKPLOY_CLOUDFLARE_COMMENT_PREFIX} (domain:${domainId})`;
 };
+
+const normalizeDokployTunnelName = (name: string) => {
+    const cleanedName = name
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-\s]/g, "")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+
+    const baseName = cleanedName || "tunnel";
+
+    return baseName.startsWith(DOKPLOY_CLOUDFLARE_TUNNEL_NAME_PREFIX)
+        ? baseName
+        : `${DOKPLOY_CLOUDFLARE_TUNNEL_NAME_PREFIX}${baseName}`;
+};
+
+const mapCloudflareTunnel = (tunnel: CloudflareTunnel): CloudflareTunnelSummary => ({
+    id: tunnel.id,
+    name: tunnel.name,
+    status: tunnel.status,
+    connectionCount: tunnel.connections?.length ?? 0,
+    lastActiveAt: tunnel.conns_active_at ?? null,
+    lastInactiveAt: tunnel.conns_inactive_at ?? null,
+    isDokployManaged: tunnel.name.startsWith(
+        DOKPLOY_CLOUDFLARE_TUNNEL_NAME_PREFIX,
+    ),
+});
 
 const isDokployManagedDnsRecord = (
     record: Pick<CloudflareDnsRecord, "comment">,
@@ -189,15 +229,32 @@ export const listCloudflareTunnels = async (
     );
 
     return tunnels
-        .map((tunnel) => ({
-            id: tunnel.id,
-            name: tunnel.name,
-            status: tunnel.status,
-            connectionCount: tunnel.connections?.length ?? 0,
-            lastActiveAt: tunnel.conns_active_at ?? null,
-            lastInactiveAt: tunnel.conns_inactive_at ?? null,
-        }))
+        .map(mapCloudflareTunnel)
         .sort((left, right) => left.name.localeCompare(right.name));
+};
+
+export const createCloudflareTunnel = async ({
+    apiToken,
+    accountId,
+    name,
+}: {
+    apiToken: string;
+    accountId: string;
+    name: string;
+}) => {
+    const tunnel = await cloudflareRequest<CloudflareTunnel>(
+        `/accounts/${accountId}/cfd_tunnel`,
+        apiToken,
+        {
+            method: "POST",
+            body: JSON.stringify({
+                name: normalizeDokployTunnelName(name),
+                config_src: "cloudflare",
+            }),
+        },
+    );
+
+    return mapCloudflareTunnel(tunnel);
 };
 
 export const findCloudflareTunnelById = async ({

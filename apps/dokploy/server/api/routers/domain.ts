@@ -1,4 +1,5 @@
 import {
+	createCloudflareTunnel,
 	createDomain,
 	findApplicationById,
 	findCloudflareIntegrationById,
@@ -29,6 +30,7 @@ import {
 } from "@/server/api/trpc";
 import { audit } from "@/server/api/utils/audit";
 import {
+	apiCreateCloudflareTunnel,
 	apiCreateDomain,
 	apiFindCompose,
 	apiFindDomain,
@@ -119,6 +121,56 @@ export const domainRouter = createTRPCRouter({
 				defaultTunnelName: integration.defaultTunnelName,
 				tunnels,
 			};
+		}),
+	createCloudflareTunnel: protectedProcedure
+		.input(
+			apiCreateCloudflareTunnel
+				.extend({
+					applicationId: z.string().optional(),
+					composeId: z.string().optional(),
+				})
+				.refine((input) => !!input.applicationId || !!input.composeId, {
+					message: "Application or compose id is required",
+				}),
+		)
+		.mutation(async ({ input, ctx }) => {
+			if (input.applicationId) {
+				await checkServicePermissionAndAccess(ctx, input.applicationId, {
+					domain: ["create"],
+				});
+			}
+
+			if (input.composeId) {
+				await checkServicePermissionAndAccess(ctx, input.composeId, {
+					domain: ["create"],
+				});
+			}
+
+			const integration = await findCloudflareIntegrationById(
+				input.cloudflareIntegrationId,
+			);
+
+			if (integration.organizationId !== ctx.session.activeOrganizationId) {
+				throw new TRPCError({
+					code: "UNAUTHORIZED",
+					message: "You are not allowed to use this Cloudflare integration",
+				});
+			}
+
+			const tunnel = await createCloudflareTunnel({
+				apiToken: integration.apiToken,
+				accountId: integration.accountId,
+				name: input.name,
+			});
+
+			await audit(ctx, {
+				action: "create",
+				resourceType: "settings",
+				resourceId: tunnel.id,
+				resourceName: tunnel.name,
+			});
+
+			return tunnel;
 		}),
 	create: protectedProcedure
 		.input(apiCreateDomain)
